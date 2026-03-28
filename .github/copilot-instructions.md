@@ -23,7 +23,7 @@ Do not skip this check, even if the immediate task seems unrelated.
 
 HoloBridge v1 is a low-latency Windows desktop and 2D game streaming platform targeting Apple Vision Pro as a virtual flat display. It is **not** a PCVR product.
 
-- **Host**: Windows app – capture, encode, transport, session management.
+- **Host**: Windows app (Rust-first) – capture, encode, transport, session management.
 - **Client**: AVP native app – auth, QUIC connection, decode, display.
 - **Protocol**: Custom native protocol over HTTP/3 + QUIC.
 
@@ -35,6 +35,7 @@ Apply these defaults to all code unless an ADR explicitly overrides them:
 
 | Concern | Default |
 |---|---|
+| Host language | Rust (safe Rust preferred; minimize `unsafe`) |
 | Transport | HTTP/3 + QUIC |
 | Capture | DXGI Desktop Duplication (primary) |
 | Codec | H.264 |

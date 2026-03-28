@@ -75,6 +75,8 @@ This is a **remote display product**, not a PCVR product. The Apple Vision Pro r
 
 ## Host Responsibilities
 
+> **Implementation language:** Rust. Prefer safe Rust for transport, auth, session, and orchestration. Use narrow FFI boundaries for DXGI capture and codec interop only.
+
 | Responsibility | Detail |
 |---|---|
 | Desktop capture | DXGI Desktop Duplication (`IDXGIOutputDuplication`) on the target display |

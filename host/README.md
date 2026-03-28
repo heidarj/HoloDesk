@@ -1,6 +1,6 @@
 # HoloBridge Host
 
-Windows application: desktop capture, H.264 encoding, QUIC/HTTP3 transport, authentication, session management, and input replay.
+**Rust** Windows application: desktop capture, H.264 encoding, QUIC/HTTP3 transport, authentication, session management, and input replay.
 
 ## Status
 
@@ -23,6 +23,7 @@ host/
 
 ## Key Constraints
 
+- The host is written in **Rust**. Prefer safe Rust; minimize `unsafe`. Use narrow FFI for DXGI/codec interop.
 - DXGI Desktop Duplication is the primary capture backend.
 - H.264 is the required codec for v1.
 - HTTP/3 + QUIC only for transport. No RTP/RTSP.

@@ -64,6 +64,7 @@ instructions: |
   - Transport: HTTP/3 + QUIC only. Never introduce RTP, RTSP, or WebRTC.
   - Capture: DXGI Desktop Duplication first. WGC only after DXGI is solid.
   - Codec: H.264 first. HEVC only after H.264 base path is complete.
+  - Host language: Rust-first. Prefer safe Rust; minimize unsafe. Narrow FFI for DXGI/codec only.
   - Auth: Sign in with Apple on the AVP client.
   - Host validates Apple identity token (JWT). Maps sub to local user.
   - QUIC session is the authorized active stream context.

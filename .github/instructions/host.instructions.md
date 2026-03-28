@@ -6,13 +6,24 @@ These instructions apply to all files under `host/`.
 
 ## Role
 
-The host is a Windows application responsible for:
+The host is a **Rust** Windows application responsible for:
 - Capturing the desktop (DXGI Desktop Duplication primary, Windows.Graphics.Capture secondary)
 - Encoding video (H.264 primary, HEVC secondary)
 - Managing QUIC/HTTP3 transport
 - Validating Apple identity tokens and authorizing users
 - Managing stream sessions and issuing resume tokens
 - Receiving and replaying input events from the client
+
+---
+
+## Language and Safety
+
+- The Windows host is **Rust-first**.
+- Prefer safe Rust for transport, auth, session, telemetry, and stream orchestration.
+- Minimize `unsafe` blocks.
+- Isolate platform-specific or low-level interop (DXGI, codec APIs) behind narrow modules or crates.
+- Do not default to C++ for the host architecture.
+- If a narrow FFI boundary becomes necessary for capture or codec interop, keep that boundary small and well documented.
 
 ---
 
@@ -37,17 +48,17 @@ Keep these concerns in separate modules. Do not mix them:
 - `IDXGIOutputDuplication::AcquireNextFrame` is the expected API.
 - Keep captured frames on the GPU (as `ID3D11Texture2D`). Avoid CPU round-trips.
 - `Windows.Graphics.Capture` is a secondary/optional backend. Do not add it until the DXGI path is solid and tested.
-- Expose a common `ICaptureBackend` interface so the encode stage is decoupled from capture implementation.
+- Expose a common `CaptureBackend` trait so the encode stage is decoupled from capture implementation.
 
 ---
 
 ## Encode
 
-- H.264 is the required codec for v1. Use Media Foundation or a hardware-accelerated encoder (NVENC, QuickSync, AMF).
+- H.264 is the required codec for v1. Use Media Foundation or a hardware-accelerated encoder (NVENC, QuickSync, AMF) via FFI if needed.
 - HEVC may be added only after H.264 is complete, tested, and validated end-to-end.
 - Keep the encode pipeline on the GPU where possible (zero-copy from capture to encoder input).
 - Optimize for low-latency encoder presets. Latency takes priority over compression efficiency.
-- Expose a common `IVideoEncoder` interface so transport is decoupled from codec details.
+- Expose a common `VideoEncoder` trait so transport is decoupled from codec details.
 
 ---
 
@@ -76,7 +87,7 @@ Keep these concerns in separate modules. Do not mix them:
 ## Input
 
 - Receive pointer, keyboard, and scroll events from the AVP client over the QUIC control stream.
-- Replay events using `SendInput` (Win32) or equivalent low-level API.
+- Replay events using `SendInput` (Win32) via FFI or equivalent low-level API.
 - Keep input handling decoupled from session management.
 
 ---
@@ -97,3 +108,4 @@ Keep these concerns in separate modules. Do not mix them:
 - Keep the capture-encode-transport path on the GPU where practical.
 - Avoid blocking calls in the hot path.
 - Avoid speculative abstractions. Build what the current milestone needs.
+
