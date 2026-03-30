@@ -85,6 +85,17 @@ Do not implement, suggest, or scaffold these in v1:
 
 ---
 
+## Terminal Workflow
+
+- Prefer terminal commands that are easy to auto-approve, such as direct `cargo build` or `cargo test` invocations.
+- Avoid long inline PowerShell one-liners that combine environment setup, directory changes, and command execution with `&` unless there is no practical alternative.
+- When environment setup is required repeatedly, add or reuse a checked-in script under `scripts/` and invoke that script directly.
+- Do **not** use `cargo doc` unless it is explicitly required for the current task.
+- Do **not** use `cargo run` for validation when `cargo build --bins` plus direct executable launch or a checked-in script would work.
+- For server/client validation, prefer bounded scripts or managed background processes that terminate on their own or are explicitly cleaned up.
+
+---
+
 ## Milestone Progression
 
 - Do **not** pause after completing a phase to ask whether to continue.
