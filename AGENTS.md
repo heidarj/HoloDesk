@@ -25,6 +25,14 @@ If bootstrap files are missing, create them before feature work:
 ## Workflow
 Work milestone-by-milestone using `docs/Plan.md`.
 
+## Terminal Command Discipline
+
+- Prefer direct tool invocations that can be auto-approved cleanly, for example `cargo build` or `cargo test`.
+- Avoid long inline PowerShell command chains that depend on `&`, `Set-Location`, and multiple environment assignments in one terminal invocation when a checked-in script can be used instead.
+- If multi-step terminal setup is required, add or reuse a checked-in script under `scripts/` and invoke the script directly.
+- Do not use `cargo doc` unless it is explicitly required for the current phase.
+- Avoid `cargo run` for validation. Prefer `cargo build --bins` or `cargo test`, then run the built executable directly or through a checked-in script with bounded timeout/cleanup behavior.
+
 For each milestone:
 1. Identify the next incomplete milestone.
 2. Implement the smallest end-to-end slice needed to satisfy it.

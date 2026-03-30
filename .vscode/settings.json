@@ -1,0 +1,33 @@
+{
+	"chat.tools.terminal.autoApprove": {
+		"cargo info": true,
+		"cargo build": true,
+		"cargo test": true,
+		"pwsh -File scripts/host-transport-build.ps1": true,
+		"pwsh -File scripts/host-transport-test.ps1": true,
+		"/^pwsh -File \\.\\\\scripts\\\\host-transport-build\\.ps1$/": {
+			"approve": true,
+			"matchCommandLine": true
+		},
+		"/^pwsh -File \\.\\\\scripts\\\\host-transport-test\\.ps1$/": {
+			"approve": true,
+			"matchCommandLine": true
+		},
+		"/^pwsh -File \"c:\\\\Users\\\\heida\\\\source\\\\HoloDesk\\\\scripts\\\\host-transport-build\\.ps1\"$/": {
+			"approve": true,
+			"matchCommandLine": true
+		},
+		"/^pwsh -File \"c:\\\\Users\\\\heida\\\\source\\\\HoloDesk\\\\scripts\\\\host-transport-test\\.ps1\"$/": {
+			"approve": true,
+			"matchCommandLine": true
+		},
+		"/^pwsh -File \"c:/Users/heida/source/HoloDesk/scripts/host-transport-build\\.ps1\"$/": {
+			"approve": true,
+			"matchCommandLine": true
+		},
+		"/^pwsh -File \"c:/Users/heida/source/HoloDesk/scripts/host-transport-test\\.ps1\"$/": {
+			"approve": true,
+			"matchCommandLine": true
+		}
+	}
+}

@@ -1,0 +1,24 @@
+[package]
+name = "holobridge-transport"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+
+[lib]
+name = "holobridge_transport"
+path = "src/lib.rs"
+
+[[bin]]
+name = "quic_server"
+path = "src/bin/quic_server.rs"
+
+[[bin]]
+name = "transport_smoke_client"
+path = "src/bin/transport_smoke_client.rs"
+
+[dependencies]
+msquic = { version = "=2.5.1-beta", default-features = false, features = ["find"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
