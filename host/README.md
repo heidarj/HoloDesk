@@ -36,7 +36,7 @@ See [../.github/instructions/host.instructions.md](../.github/instructions/host.
 
 ## TODO (Milestone 1)
 
-- [ ] Select QUIC library (suggested: MsQuic)
-- [ ] Scaffold QUIC server in `transport/`
-- [ ] Implement minimal control stream message exchange
-- [ ] Verify loopback connectivity with client
+- [x] Select QUIC library (quinn — pure Rust, see ADR 0003)
+- [x] Scaffold QUIC server in `transport/`
+- [x] Implement minimal control stream message exchange
+- [x] Verify loopback connectivity with client

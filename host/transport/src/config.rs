@@ -4,11 +4,7 @@ use crate::protocol::DEFAULT_ALPN;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CertificateSource {
-    WindowsCertificateHash {
-        sha1_thumbprint: String,
-        store_name: String,
-        use_machine_store: bool,
-    },
+    SelfSigned,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -38,11 +34,7 @@ pub struct TransportClientConfig {
 
 impl Default for CertificateSource {
     fn default() -> Self {
-        Self::WindowsCertificateHash {
-            sha1_thumbprint: String::new(),
-            store_name: "MY".to_owned(),
-            use_machine_store: false,
-        }
+        Self::SelfSigned
     }
 }
 
@@ -75,27 +67,12 @@ impl Default for TransportClientConfig {
 impl TransportServerConfig {
     pub fn from_env() -> Self {
         let defaults = Self::default();
-        let certificate = match &defaults.certificate {
-            CertificateSource::WindowsCertificateHash {
-                sha1_thumbprint,
-                store_name,
-                use_machine_store,
-            } => CertificateSource::WindowsCertificateHash {
-                sha1_thumbprint: env::var("HOLOBRIDGE_TRANSPORT_CERT_SHA1")
-                    .unwrap_or_else(|_| sha1_thumbprint.clone()),
-                store_name: env::var("HOLOBRIDGE_TRANSPORT_CERT_STORE")
-                    .unwrap_or_else(|_| store_name.clone()),
-                use_machine_store: env_bool("HOLOBRIDGE_TRANSPORT_CERT_MACHINE_STORE")
-                    .unwrap_or(*use_machine_store),
-            },
-        };
-
         Self {
             bind_address: env::var("HOLOBRIDGE_TRANSPORT_BIND")
                 .unwrap_or_else(|_| defaults.bind_address.clone()),
             port: env_u16("HOLOBRIDGE_TRANSPORT_PORT").unwrap_or(defaults.port),
             alpn: env::var("HOLOBRIDGE_TRANSPORT_ALPN").unwrap_or_else(|_| defaults.alpn.clone()),
-            certificate,
+            certificate: CertificateSource::SelfSigned,
             debug_validation: DebugTlsSettings::from_env(),
             server_initiated_close_after_ack: env_bool("HOLOBRIDGE_TRANSPORT_SERVER_CLOSE_AFTER_ACK")
                 .unwrap_or(defaults.server_initiated_close_after_ack),

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(VCPKG_ROOT=C:/Users/heida/vcpkg cargo build --bins)",
+      "Bash(pwsh -Command \"Get-ChildItem Cert:\\\\CurrentUser\\\\My | Select-Object Subject, Thumbprint, NotAfter | Format-Table -AutoSize\")",
+      "Bash(VCPKG_ROOT=C:/Users/heida/vcpkg cargo test)",
+      "Bash(pwsh -Command \"Get-ChildItem Cert:\\\\CurrentUser\\\\My\\\\ECD7B387E2B7111F9DA704A3F1429464E14D8B88 | Select-Object Subject, FriendlyName, HasPrivateKey, NotAfter, EnhancedKeyUsageList | Format-List\")",
+      "WebSearch",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:github.com)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)"
+    ]
+  }
+}

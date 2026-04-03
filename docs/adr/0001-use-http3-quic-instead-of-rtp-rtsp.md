@@ -64,7 +64,7 @@ Control messages (session setup, auth, input events, resume token exchange) requ
 
 ## Consequences
 
-- The host must use a QUIC library that supports unreliable datagrams and QUIC streams. On Windows, **MsQuic** is the recommended option (open source, maintained by Microsoft, ships with Windows 11).
+- The host must use a QUIC library that supports unreliable datagrams and QUIC streams. The host uses **quinn** (pure Rust). See [ADR 0003](0003-use-quinn-instead-of-msquic.md) for the rationale behind choosing quinn over the originally considered MsQuic.
 - The AVP client must use a QUIC client. On Apple platforms, **`Network.framework`** supports QUIC natively (available on iOS 15+, visionOS 1+).
 - A new ADR should be filed if a specific QUIC library is chosen that requires justification.
 - RTP and RTSP must not be introduced in v1 without a superseding ADR.

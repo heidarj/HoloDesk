@@ -4,20 +4,19 @@ use holobridge_transport::{TransportClientConfig, TransportSmokeClient};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     init_tracing();
 
     let client = TransportSmokeClient::new(TransportClientConfig::from_env());
     let summary = client.runtime_summary();
 
-    info!(endpoint = %summary.remote_endpoint, alpn = %summary.alpn, validation = %summary.validation, close_mode = summary.close_mode, "prepared live smoke client configuration");
+    info!(endpoint = %summary.remote_endpoint, alpn = %summary.alpn, validation = %summary.validation, close_mode = summary.close_mode, "prepared smoke client configuration");
 
-    match client.run() {
-        Ok(()) => {
-            ExitCode::SUCCESS
-        }
+    match client.run().await {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            error!(error = %error, "live MsQuic smoke client remains incomplete; transcript-only success paths were removed from the default binary");
+            error!(error = %error, "smoke client failed");
             ExitCode::FAILURE
         }
     }

@@ -11,7 +11,6 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $transportDir = Join-Path $repoRoot 'host\transport'
 
-$env:VCPKG_ROOT = 'C:\Users\heida\vcpkg'
 $env:HOLOBRIDGE_TRANSPORT_HOST = $Host
 $env:HOLOBRIDGE_TRANSPORT_PORT = [string]$Port
 $env:HOLOBRIDGE_TRANSPORT_ALLOW_INSECURE_CERT = if ($AllowInsecureCert) { 'true' } else { 'false' }

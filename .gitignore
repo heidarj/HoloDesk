@@ -1,0 +1,26 @@
+# Rust
+target/
+**/target/
+
+# Swift / Xcode / visionOS
+.build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcuserdatad/
+*.xcuserstate
+.swiftpm/
+
+# Local environment and temporary files
+.idea/
+.vs/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tmp
+*.temp
+*.swp
+*.swo
+*.orig
+*.rej

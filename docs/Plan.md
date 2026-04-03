@@ -57,7 +57,7 @@ Each milestone is designed to be small enough for an autonomous coding agent to 
 3. Verify clean shutdown on both sides.
 
 **Notes:**
-- Use a well-maintained QUIC/HTTP3 library. On Windows, consider MsQuic. On Apple platforms, consider NWQUIC (`Network.framework` with QUIC) or a Swift QUIC library.
+- Use a well-maintained QUIC/HTTP3 library. The host uses quinn (pure Rust). On Apple platforms, use `Network.framework` with QUIC. See ADR 0003.
 - Do not implement auth or video in this milestone. Stub those interfaces.
 - Document the chosen QUIC library and version in a new ADR if the choice requires justification.
 

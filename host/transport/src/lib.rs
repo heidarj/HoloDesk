@@ -14,4 +14,4 @@ pub use server::{
     ServerRuntimeSummary, SmokeClientRuntimeSummary, TransportError, TransportServer,
     TransportSmokeClient,
 };
-pub use tls::{ClientValidationBinding, MsQuicCredentialBinding, TlsConfigError};
+pub use tls::TlsConfigError;
