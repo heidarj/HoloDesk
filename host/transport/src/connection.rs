@@ -30,7 +30,17 @@ pub enum ConnectionError {
         role: ConnectionRole,
         message_type: &'static str,
     },
+    AuthNotComplete,
 }
+
+/// Result of auth processing, returned to the caller to drive async validation.
+#[derive(Debug, Clone)]
+pub enum AuthAction {
+    /// The server received an Authenticate message; the caller should validate the token
+    /// and then call `record_auth_result()`.
+    ValidateToken(String),
+}
+
 
 #[derive(Debug, Clone)]
 pub struct ControlConnection {
@@ -40,6 +50,10 @@ pub struct ControlConnection {
     hello_ack_received: bool,
     goodbye_sent: bool,
     goodbye_received: bool,
+    auth_received: bool,
+    auth_result_sent: bool,
+    auth_result_received: bool,
+    auth_success: Option<bool>,
 }
 
 impl ControlConnection {
@@ -54,6 +68,10 @@ impl ControlConnection {
             hello_ack_received: false,
             goodbye_sent: false,
             goodbye_received: false,
+            auth_received: false,
+            auth_result_sent: false,
+            auth_result_received: false,
+            auth_success: None,
         }
     }
 
@@ -61,11 +79,38 @@ impl ControlConnection {
         self.role
     }
 
-    pub fn on_receive(&mut self, message: ControlMessage) -> Result<Vec<ControlMessage>, ConnectionError> {
+    pub fn on_receive(
+        &mut self,
+        message: ControlMessage,
+    ) -> Result<(Vec<ControlMessage>, Option<AuthAction>), ConnectionError> {
         self.transcript.received.push(message.clone());
         match self.role {
             ConnectionRole::Server => self.on_receive_as_server(message),
             ConnectionRole::Client => self.on_receive_as_client(message),
+        }
+    }
+
+    /// Record the outcome of external auth validation (called by server after token validation).
+    /// Returns the AuthResult message to send to the client.
+    pub fn record_auth_result(
+        &mut self,
+        success: bool,
+        message: impl Into<String>,
+        user_display_name: Option<String>,
+    ) -> ControlMessage {
+        self.auth_success = Some(success);
+        self.auth_result_sent = true;
+        let msg = ControlMessage::auth_result(success, message, user_display_name);
+        self.transcript.sent.push(msg.clone());
+        msg
+    }
+
+    pub fn auth_complete(&self) -> bool {
+        match self.role {
+            ConnectionRole::Server => self.auth_result_sent && self.auth_success == Some(true),
+            ConnectionRole::Client => {
+                self.auth_result_received && self.auth_success == Some(true)
+            }
         }
     }
 
@@ -87,11 +132,17 @@ impl ControlConnection {
         self.goodbye_sent || self.goodbye_received
     }
 
-    pub fn handshake_complete(&self) -> bool {
+    /// Returns true when the basic Hello/HelloAck exchange is complete (pre-auth).
+    pub fn hello_exchanged(&self) -> bool {
         match self.role {
             ConnectionRole::Client => self.hello_ack_received,
             ConnectionRole::Server => self.hello_received,
         }
+    }
+
+    /// Returns true when the full handshake (Hello + Auth) is complete.
+    pub fn handshake_complete(&self) -> bool {
+        self.hello_exchanged() && self.auth_complete()
     }
 
     pub fn close_initiator(&self) -> CloseInitiator {
@@ -115,7 +166,7 @@ impl ControlConnection {
     fn on_receive_as_server(
         &mut self,
         message: ControlMessage,
-    ) -> Result<Vec<ControlMessage>, ConnectionError> {
+    ) -> Result<(Vec<ControlMessage>, Option<AuthAction>), ConnectionError> {
         match message {
             ControlMessage::Hello { .. } => {
                 if self.hello_received {
@@ -124,15 +175,29 @@ impl ControlConnection {
                 self.hello_received = true;
                 let ack = ControlMessage::hello_ack("ok");
                 self.transcript.sent.push(ack.clone());
-                Ok(vec![ack])
+                Ok((vec![ack], None))
             }
             ControlMessage::HelloAck { .. } => Err(ConnectionError::UnexpectedMessage {
                 role: self.role,
                 message_type: "hello_ack",
             }),
+            ControlMessage::Authenticate { identity_token } => {
+                if !self.hello_received {
+                    return Err(ConnectionError::UnexpectedMessage {
+                        role: self.role,
+                        message_type: "authenticate (before hello)",
+                    });
+                }
+                self.auth_received = true;
+                Ok((Vec::new(), Some(AuthAction::ValidateToken(identity_token))))
+            }
+            ControlMessage::AuthResult { .. } => Err(ConnectionError::UnexpectedMessage {
+                role: self.role,
+                message_type: "auth_result",
+            }),
             ControlMessage::Goodbye { .. } => {
                 self.goodbye_received = true;
-                Ok(Vec::new())
+                Ok((Vec::new(), None))
             }
         }
     }
@@ -140,7 +205,7 @@ impl ControlConnection {
     fn on_receive_as_client(
         &mut self,
         message: ControlMessage,
-    ) -> Result<Vec<ControlMessage>, ConnectionError> {
+    ) -> Result<(Vec<ControlMessage>, Option<AuthAction>), ConnectionError> {
         match message {
             ControlMessage::Hello { .. } => Err(ConnectionError::UnexpectedMessage {
                 role: self.role,
@@ -151,11 +216,20 @@ impl ControlConnection {
                     return Err(ConnectionError::DuplicateHelloAck);
                 }
                 self.hello_ack_received = true;
-                Ok(Vec::new())
+                Ok((Vec::new(), None))
+            }
+            ControlMessage::Authenticate { .. } => Err(ConnectionError::UnexpectedMessage {
+                role: self.role,
+                message_type: "authenticate",
+            }),
+            ControlMessage::AuthResult { success, .. } => {
+                self.auth_result_received = true;
+                self.auth_success = Some(success);
+                Ok((Vec::new(), None))
             }
             ControlMessage::Goodbye { .. } => {
                 self.goodbye_received = true;
-                Ok(Vec::new())
+                Ok((Vec::new(), None))
             }
         }
     }
@@ -172,6 +246,7 @@ impl fmt::Display for ConnectionError {
                 "unexpected {message_type} for {:?} control stream state",
                 role
             ),
+            Self::AuthNotComplete => write!(formatter, "auth handshake not complete"),
         }
     }
 }

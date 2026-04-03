@@ -5,7 +5,7 @@ pub mod server;
 pub mod tls;
 
 pub use config::{CertificateSource, DebugTlsSettings, TransportClientConfig, TransportServerConfig};
-pub use connection::{CloseInitiator, ConnectionRole, ControlConnection};
+pub use connection::{AuthAction, CloseInitiator, ConnectionRole, ControlConnection};
 pub use protocol::{
     ControlMessage, ControlMessageCodec, FrameAccumulator, ProtocolError,
     CONTROL_STREAM_CAPABILITY, DEFAULT_ALPN, PROTOCOL_VERSION,

@@ -16,7 +16,16 @@ path = "src/bin/quic_server.rs"
 name = "transport_smoke_client"
 path = "src/bin/transport_smoke_client.rs"
 
+[[bin]]
+name = "auth_smoke_client"
+path = "src/bin/auth_smoke_client.rs"
+
+[[bin]]
+name = "test_keygen"
+path = "src/bin/test_keygen.rs"
+
 [dependencies]
+holobridge-auth = { path = "../auth" }
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 rcgen = "0.13"

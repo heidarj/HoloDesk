@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use holobridge_auth::AuthConfig;
 use holobridge_transport::{TransportServer, TransportServerConfig};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -8,9 +9,24 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> ExitCode {
     init_tracing();
 
-    let server = TransportServer::new(TransportServerConfig::from_env());
-    let summary = server.runtime_summary();
+    let transport_config = TransportServerConfig::from_env();
+    let auth_config = AuthConfig::from_env();
 
+    let server = if auth_config.test_mode || !auth_config.apple_bundle_id.is_empty() {
+        info!("auth enabled (test_mode={})", auth_config.test_mode);
+        match TransportServer::with_auth(transport_config, &auth_config).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!(error = %e, "failed to initialize auth");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        info!("auth disabled (no bundle ID configured)");
+        TransportServer::new(transport_config)
+    };
+
+    let summary = server.runtime_summary();
     info!(backend = summary.backend, endpoint = %summary.bind_endpoint, alpn = %summary.alpn, certificate = %summary.certificate, close_mode = summary.close_mode, "prepared host transport configuration");
 
     match server.serve_once().await {

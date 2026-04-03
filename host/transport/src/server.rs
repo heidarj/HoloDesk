@@ -1,12 +1,14 @@
-use std::{error::Error, fmt, net::SocketAddr, time::Duration};
+use std::{error::Error, fmt, net::SocketAddr, sync::Arc, time::Duration};
 
 use quinn::{Endpoint, RecvStream, SendStream};
 use tokio::time::timeout;
-use tracing::info;
+use tracing::{info, warn};
+
+use holobridge_auth::{AuthConfig, AuthError, AuthorizedUserStore, TokenValidator};
 
 use crate::{
     config::{TransportClientConfig, TransportServerConfig},
-    connection::{ConnectionError, ConnectionRole, ControlConnection},
+    connection::{AuthAction, ConnectionError, ConnectionRole, ControlConnection},
     protocol::{ControlMessage, ControlMessageCodec, FrameAccumulator, ProtocolError},
     tls::{build_client_config, build_server_config, TlsConfigError},
 };
@@ -25,6 +27,7 @@ pub enum TransportError {
     InvalidEndpoint(String),
     Timeout(&'static str),
     Runtime(String),
+    Auth(AuthError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,9 +47,10 @@ pub struct SmokeClientRuntimeSummary {
     pub close_mode: &'static str,
 }
 
-#[derive(Debug, Clone)]
 pub struct TransportServer {
     config: TransportServerConfig,
+    auth_validator: Option<Arc<TokenValidator>>,
+    user_store: Option<Arc<AuthorizedUserStore>>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,12 +58,37 @@ pub struct TransportSmokeClient {
     config: TransportClientConfig,
 }
 
-const SERVER_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl TransportServer {
     pub fn new(config: TransportServerConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            auth_validator: None,
+            user_store: None,
+        }
+    }
+
+    /// Create a server with auth validation enabled.
+    pub async fn with_auth(
+        config: TransportServerConfig,
+        auth_config: &AuthConfig,
+    ) -> Result<Self, TransportError> {
+        let validator = TokenValidator::new(auth_config)
+            .await
+            .map_err(TransportError::Auth)?;
+        let user_store = AuthorizedUserStore::load(
+            &auth_config.user_store_path,
+            auth_config.bootstrap_mode,
+        )
+        .await
+        .map_err(TransportError::Auth)?;
+
+        Ok(Self {
+            config,
+            auth_validator: Some(Arc::new(validator)),
+            user_store: Some(Arc::new(user_store)),
+        })
     }
 
     pub fn config(&self) -> &TransportServerConfig {
@@ -91,21 +120,24 @@ impl TransportServer {
 
         info!(endpoint = %bind_addr, alpn = %self.config.alpn, "host transport listener started");
 
-        let incoming = timeout(SERVER_WAIT_TIMEOUT, endpoint.accept())
-            .await
-            .map_err(|_| TransportError::Timeout("timed out waiting for incoming connection"))?
-            .ok_or_else(|| TransportError::Runtime("endpoint closed before accepting".to_owned()))?;
+        let incoming = await_with_optional_timeout(
+            self.config.server_wait_timeout,
+            endpoint.accept(),
+            "timed out waiting for incoming connection",
+        )
+        .await?
+        .ok_or_else(|| TransportError::Runtime("endpoint closed before accepting".to_owned()))?;
 
         let connection = incoming.await.map_err(TransportError::Quinn)?;
         let remote = connection.remote_address();
         info!(remote = %remote, "host transport connection established");
 
-        let (send, recv) = timeout(
-            SERVER_WAIT_TIMEOUT,
+        let (send, recv) = await_with_optional_timeout(
+            self.config.server_wait_timeout,
             connection.accept_bi(),
+            "timed out waiting for control stream",
         )
-        .await
-        .map_err(|_| TransportError::Timeout("timed out waiting for control stream"))?
+        .await?
         .map_err(TransportError::Quinn)?;
 
         info!("host transport control stream accepted");
@@ -114,6 +146,8 @@ impl TransportServer {
             send,
             recv,
             self.config.server_initiated_close_after_ack,
+            self.auth_validator.clone(),
+            self.user_store.clone(),
         )
         .await;
 
@@ -187,6 +221,7 @@ impl TransportSmokeClient {
             send,
             recv,
             self.config.send_goodbye_after_ack,
+            self.config.identity_token.as_deref(),
         )
         .await;
 
@@ -201,6 +236,8 @@ async fn run_server_control_stream(
     mut send: SendStream,
     mut recv: RecvStream,
     server_initiated_close: bool,
+    auth_validator: Option<Arc<TokenValidator>>,
+    user_store: Option<Arc<AuthorizedUserStore>>,
 ) -> Result<(), TransportError> {
     let mut protocol = ControlConnection::new(ConnectionRole::Server);
     let mut accumulator = FrameAccumulator::default();
@@ -209,14 +246,67 @@ async fn run_server_control_stream(
     let messages = read_messages(&mut recv, &mut accumulator).await?;
     for message in messages {
         info!(kind = message.kind(), "host transport received control message");
-        let responses = protocol.on_receive(message)?;
+        let (responses, _auth_action) = protocol.on_receive(message)?;
         for response in &responses {
             info!(kind = response.kind(), "host transport sending control message");
             send_message(&mut send, response).await?;
         }
     }
 
-    if server_initiated_close && protocol.handshake_complete() {
+    // If auth is configured, wait for Authenticate message
+    if auth_validator.is_some() {
+        info!("host transport waiting for authentication");
+        let auth_messages = read_messages(&mut recv, &mut accumulator).await?;
+        for message in auth_messages {
+            info!(kind = message.kind(), "host transport received control message");
+            let (_responses, auth_action) = protocol.on_receive(message)?;
+
+            if let Some(AuthAction::ValidateToken(token)) = auth_action {
+                let validator = auth_validator.as_ref().unwrap();
+                let store = user_store.as_ref().unwrap();
+
+                match validator.validate(&token).await {
+                    Ok(claims) => {
+                        let sub = &claims.sub;
+                        let authorized = store
+                            .check_or_bootstrap(sub, claims.email.as_deref())
+                            .await
+                            .map_err(TransportError::Auth)?;
+
+                        if authorized {
+                            info!(sub, "auth succeeded");
+                            let result = protocol.record_auth_result(
+                                true,
+                                "authenticated",
+                                claims.email.clone(),
+                            );
+                            send_message(&mut send, &result).await?;
+                        } else {
+                            warn!(sub, "auth failed: user not authorized");
+                            let result = protocol.record_auth_result(
+                                false,
+                                "user not authorized",
+                                None,
+                            );
+                            send_message(&mut send, &result).await?;
+                            send.finish()?;
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "auth failed: token validation error");
+                        let result =
+                            protocol.record_auth_result(false, e.to_string(), None);
+                        send_message(&mut send, &result).await?;
+                        send.finish()?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    if server_initiated_close && protocol.hello_exchanged() {
         let goodbye = protocol.initiate_goodbye("server-initiated-close");
         info!(kind = goodbye.kind(), "host transport sending control message");
         send_message(&mut send, &goodbye).await?;
@@ -269,6 +359,7 @@ async fn run_client_control_stream(
     mut send: SendStream,
     mut recv: RecvStream,
     send_goodbye_after_ack: bool,
+    identity_token: Option<&str>,
 ) -> Result<(), TransportError> {
     let mut protocol = ControlConnection::new(ConnectionRole::Client);
     let mut accumulator = FrameAccumulator::default();
@@ -286,7 +377,30 @@ async fn run_client_control_stream(
         protocol.on_receive(message)?;
     }
 
-    if send_goodbye_after_ack && protocol.handshake_complete() {
+    // If we have an identity token, send Authenticate after HelloAck
+    if let Some(token) = identity_token {
+        if protocol.hello_exchanged() {
+            let auth = ControlMessage::authenticate(token);
+            protocol.record_outbound(auth.clone());
+            info!(kind = auth.kind(), "transport smoke client sending control message");
+            send_message(&mut send, &auth).await?;
+
+            // Read AuthResult
+            let auth_messages = read_messages(&mut recv, &mut accumulator).await?;
+            for message in auth_messages {
+                info!(kind = message.kind(), "transport smoke client received control message");
+                protocol.on_receive(message)?;
+            }
+
+            if !protocol.auth_complete() {
+                info!("transport smoke client auth was rejected");
+                send.finish()?;
+                return Ok(());
+            }
+        }
+    }
+
+    if send_goodbye_after_ack && protocol.hello_exchanged() {
         let goodbye = protocol.initiate_goodbye("client-initiated-close");
         info!(kind = goodbye.kind(), "transport smoke client sending control message");
         send_message(&mut send, &goodbye).await?;
@@ -352,6 +466,19 @@ async fn read_messages(
     }
 }
 
+async fn await_with_optional_timeout<T>(
+    duration: Option<Duration>,
+    future: impl std::future::Future<Output = T>,
+    timeout_reason: &'static str,
+) -> Result<T, TransportError> {
+    match duration {
+        Some(duration) => timeout(duration, future)
+            .await
+            .map_err(|_| TransportError::Timeout(timeout_reason)),
+        None => Ok(future.await),
+    }
+}
+
 impl fmt::Display for TransportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -367,6 +494,7 @@ impl fmt::Display for TransportError {
             Self::InvalidEndpoint(endpoint) => write!(formatter, "invalid endpoint: {endpoint}"),
             Self::Timeout(reason) => write!(formatter, "{reason}"),
             Self::Runtime(reason) => write!(formatter, "{reason}"),
+            Self::Auth(error) => write!(formatter, "auth error: {error}"),
         }
     }
 }
@@ -406,5 +534,11 @@ impl From<ProtocolError> for TransportError {
 impl From<ConnectionError> for TransportError {
     fn from(value: ConnectionError) -> Self {
         Self::Connection(value)
+    }
+}
+
+impl From<AuthError> for TransportError {
+    fn from(value: AuthError) -> Self {
+        Self::Auth(value)
     }
 }

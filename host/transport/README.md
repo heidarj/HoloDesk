@@ -26,6 +26,7 @@ The binaries read environment variables for configuration.
 - `HOLOBRIDGE_TRANSPORT_ALPN`: application ALPN. Default `holobridge-m1`.
 - `HOLOBRIDGE_TRANSPORT_ALLOW_INSECURE_CERT`: debug-only certificate verification bypass. Default `false`.
 - `HOLOBRIDGE_TRANSPORT_SERVER_CLOSE_AFTER_ACK`: when `true`, model the server-initiated close path.
+- `HOLOBRIDGE_TRANSPORT_SERVER_WAIT_TIMEOUT_SECS`: host-side wait timeout for incoming connections and control stream open. Default `60`. Set to `0` to disable.
 - `HOLOBRIDGE_TRANSPORT_CLIENT_SEND_GOODBYE`: when `true`, model the client-initiated close path after `hello_ack`.
 - `HOLOBRIDGE_TRANSPORT_HOST`: client target host. Default `127.0.0.1`.
 - `HOLOBRIDGE_TRANSPORT_SERVER_NAME`: TLS server name for the client. Default `localhost`.

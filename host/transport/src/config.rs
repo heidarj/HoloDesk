@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, time::Duration};
 
 use crate::protocol::DEFAULT_ALPN;
 
@@ -20,6 +20,7 @@ pub struct TransportServerConfig {
     pub certificate: CertificateSource,
     pub debug_validation: DebugTlsSettings,
     pub server_initiated_close_after_ack: bool,
+    pub server_wait_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +31,8 @@ pub struct TransportClientConfig {
     pub alpn: String,
     pub debug_validation: DebugTlsSettings,
     pub send_goodbye_after_ack: bool,
+    /// Identity token to send during auth handshake (for smoke testing).
+    pub identity_token: Option<String>,
 }
 
 impl Default for CertificateSource {
@@ -47,6 +50,7 @@ impl Default for TransportServerConfig {
             certificate: CertificateSource::default(),
             debug_validation: DebugTlsSettings::default(),
             server_initiated_close_after_ack: false,
+            server_wait_timeout: Some(Duration::from_secs(60)),
         }
     }
 }
@@ -60,6 +64,7 @@ impl Default for TransportClientConfig {
             alpn: DEFAULT_ALPN.to_owned(),
             debug_validation: DebugTlsSettings::default(),
             send_goodbye_after_ack: true,
+            identity_token: None,
         }
     }
 }
@@ -76,6 +81,8 @@ impl TransportServerConfig {
             debug_validation: DebugTlsSettings::from_env(),
             server_initiated_close_after_ack: env_bool("HOLOBRIDGE_TRANSPORT_SERVER_CLOSE_AFTER_ACK")
                 .unwrap_or(defaults.server_initiated_close_after_ack),
+            server_wait_timeout: env_optional_duration_secs("HOLOBRIDGE_TRANSPORT_SERVER_WAIT_TIMEOUT_SECS")
+                .unwrap_or(defaults.server_wait_timeout),
         }
     }
 
@@ -98,6 +105,7 @@ impl TransportClientConfig {
             debug_validation: DebugTlsSettings::from_env(),
             send_goodbye_after_ack: env_bool("HOLOBRIDGE_TRANSPORT_CLIENT_SEND_GOODBYE")
                 .unwrap_or(defaults.send_goodbye_after_ack),
+            identity_token: env::var("HOLOBRIDGE_AUTH_IDENTITY_TOKEN").ok(),
         }
     }
 
@@ -131,4 +139,16 @@ fn env_u16(name: &str) -> Option<u16> {
     env::var(name)
         .ok()
         .and_then(|value| value.trim().parse::<u16>().ok())
+}
+
+fn env_optional_duration_secs(name: &str) -> Option<Option<Duration>> {
+    env::var(name).ok().and_then(|value| {
+        value.trim().parse::<u64>().ok().map(|seconds| {
+            if seconds == 0 {
+                None
+            } else {
+                Some(Duration::from_secs(seconds))
+            }
+        })
+    })
 }

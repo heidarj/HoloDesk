@@ -3,7 +3,7 @@ use std::{convert::TryInto, error::Error, fmt};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const DEFAULT_ALPN: &str = "holobridge-m1";
+pub const DEFAULT_ALPN: &str = "holobridge-m2";
 pub const CONTROL_STREAM_CAPABILITY: &str = "control-stream-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +23,16 @@ pub enum ControlMessage {
     },
     Goodbye {
         reason: String,
+    },
+    Authenticate {
+        #[serde(rename = "identity_token")]
+        identity_token: String,
+    },
+    AuthResult {
+        success: bool,
+        message: String,
+        #[serde(rename = "user_display_name")]
+        user_display_name: Option<String>,
     },
 }
 
@@ -68,11 +78,31 @@ impl ControlMessage {
         }
     }
 
+    pub fn authenticate(identity_token: impl Into<String>) -> Self {
+        Self::Authenticate {
+            identity_token: identity_token.into(),
+        }
+    }
+
+    pub fn auth_result(
+        success: bool,
+        message: impl Into<String>,
+        user_display_name: Option<String>,
+    ) -> Self {
+        Self::AuthResult {
+            success,
+            message: message.into(),
+            user_display_name,
+        }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Hello { .. } => "hello",
             Self::HelloAck { .. } => "hello_ack",
             Self::Goodbye { .. } => "goodbye",
+            Self::Authenticate { .. } => "authenticate",
+            Self::AuthResult { .. } => "auth_result",
         }
     }
 
@@ -81,7 +111,7 @@ impl ControlMessage {
             Self::Hello { protocol_version, .. } | Self::HelloAck { protocol_version, .. } => {
                 Some(*protocol_version)
             }
-            Self::Goodbye { .. } => None,
+            Self::Goodbye { .. } | Self::Authenticate { .. } | Self::AuthResult { .. } => None,
         }
     }
 }
