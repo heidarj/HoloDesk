@@ -9,7 +9,8 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $captureDir = Join-Path $repoRoot 'host\capture'
-$binaryPath = Join-Path $captureDir 'target\debug\dxgi_capture_smoke.exe'
+$workspaceTargetDir = Join-Path (Join-Path $repoRoot 'host') 'target'
+$binaryPath = Join-Path $workspaceTargetDir 'debug\dxgi_capture_smoke.exe'
 
 Set-Location $captureDir
 

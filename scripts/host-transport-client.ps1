@@ -10,6 +10,8 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $transportDir = Join-Path $repoRoot 'host\transport'
+$workspaceTargetDir = Join-Path (Join-Path $repoRoot 'host') 'target'
+$binaryPath = Join-Path $workspaceTargetDir 'debug\transport_smoke_client.exe'
 
 $env:HOLOBRIDGE_TRANSPORT_HOST = $Host
 $env:HOLOBRIDGE_TRANSPORT_PORT = [string]$Port
@@ -19,4 +21,4 @@ $env:HOLOBRIDGE_TRANSPORT_SERVER_NAME = $ServerName
 
 Set-Location $transportDir
 
-.\target\debug\transport_smoke_client.exe
+& $binaryPath

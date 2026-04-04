@@ -8,6 +8,8 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $transportDir = Join-Path $repoRoot 'host\transport'
+$workspaceTargetDir = Join-Path (Join-Path $repoRoot 'host') 'target'
+$binaryPath = Join-Path $workspaceTargetDir 'debug\quic_server.exe'
 
 $env:HOLOBRIDGE_TRANSPORT_BIND = $Bind
 $env:HOLOBRIDGE_TRANSPORT_PORT = [string]$Port
@@ -15,4 +17,4 @@ $env:HOLOBRIDGE_TRANSPORT_SERVER_CLOSE_AFTER_ACK = if ($ServerCloseAfterAck) { '
 
 Set-Location $transportDir
 
-.\target\debug\quic_server.exe
+& $binaryPath
