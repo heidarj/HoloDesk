@@ -41,21 +41,16 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         self.connection = connection
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var didResume = false
             connection.stateUpdateHandler = { state in
-                guard !didResume else {
-                    return
-                }
-
                 switch state {
                 case .ready:
-                    didResume = true
+                    connection.stateUpdateHandler = nil
                     continuation.resume()
                 case .failed(let error):
-                    didResume = true
+                    connection.stateUpdateHandler = nil
                     continuation.resume(throwing: TransportClientError.connectionFailed(String(describing: error)))
                 case .cancelled:
-                    didResume = true
+                    connection.stateUpdateHandler = nil
                     continuation.resume(throwing: TransportClientError.connectionClosed)
                 default:
                     break
@@ -199,7 +194,7 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
                     }
 
                     let trustRef = sec_trust_copy_ref(trust).takeRetainedValue()
-                    guard let certificate = SecTrustGetCertificateAtIndex(trustRef, 0) else {
+                    guard let certificate = copyLeafCertificate(from: trustRef) else {
                         completion(false)
                         return
                     }
@@ -220,5 +215,9 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
 
     private static func normalizeFingerprint(_ value: String) -> String {
         value.replacingOccurrences(of: ":", with: "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func copyLeafCertificate(from trust: SecTrust) -> SecCertificate? {
+        (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first
     }
 }
