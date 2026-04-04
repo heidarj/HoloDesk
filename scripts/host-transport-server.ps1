@@ -15,6 +15,10 @@ $env:HOLOBRIDGE_TRANSPORT_BIND = $Bind
 $env:HOLOBRIDGE_TRANSPORT_PORT = [string]$Port
 $env:HOLOBRIDGE_TRANSPORT_SERVER_CLOSE_AFTER_ACK = if ($ServerCloseAfterAck) { 'true' } else { 'false' }
 
-Set-Location $transportDir
-
-& $binaryPath
+Push-Location $transportDir
+try {
+    & $binaryPath
+}
+finally {
+    Pop-Location
+}
