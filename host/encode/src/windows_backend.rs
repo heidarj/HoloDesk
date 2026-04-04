@@ -730,27 +730,27 @@ fn configure_codec_properties(
     let codec_api: ICodecAPI = transform
         .cast()
         .map_err(|error| map_windows_error("IMFTransform::cast(ICodecAPI)", error))?;
-    set_codec_api_u32(
+    try_set_codec_api_u32(
         &codec_api,
         &CODECAPI_AVEncCommonRateControlMode,
         eAVEncCommonRateControlMode_CBR.0 as u32,
     )?;
-    set_codec_api_u32(
+    try_set_codec_api_u32(
         &codec_api,
         &CODECAPI_AVEncCommonMeanBitRate,
         config.bitrate_bps,
     )?;
-    set_codec_api_u32(
+    try_set_codec_api_u32(
         &codec_api,
         &CODECAPI_AVEncMPVGOPSize,
         config.gop_size()?,
     )?;
-    set_codec_api_u32(
+    try_set_codec_api_u32(
         &codec_api,
         &CODECAPI_AVEncMPVDefaultBPictureCount,
         0,
     )?;
-    set_codec_api_bool(
+    try_set_codec_api_bool(
         &codec_api,
         &CODECAPI_AVLowLatencyMode,
         config.low_latency,
@@ -902,32 +902,45 @@ fn copy_buffer_bytes(
     Ok(bytes)
 }
 
-fn set_codec_api_u32(
+fn try_set_codec_api_u32(
     codec_api: &ICodecAPI,
     property: &windows::core::GUID,
     value: u32,
 ) -> Result<(), EncodeError> {
-    let mut variant = variant_u32(value);
-    unsafe {
-        codec_api
-            .SetValue(property, &mut variant)
-            .map_err(|error| map_windows_error("ICodecAPI::SetValue", error))?;
+    if !codec_api_property_is_writable(codec_api, property) {
+        return Ok(());
     }
-    Ok(())
+
+    let mut variant = variant_u32(value);
+    match unsafe { codec_api.SetValue(property, &mut variant) } {
+        Ok(()) => Ok(()),
+        Err(error) if error.code().0 == 0x80070057u32 as i32 => Ok(()),
+        Err(error) => Err(map_windows_error("ICodecAPI::SetValue", error)),
+    }
 }
 
-fn set_codec_api_bool(
+fn try_set_codec_api_bool(
     codec_api: &ICodecAPI,
     property: &windows::core::GUID,
     value: bool,
 ) -> Result<(), EncodeError> {
-    let mut variant = variant_bool(value);
-    unsafe {
-        codec_api
-            .SetValue(property, &mut variant)
-            .map_err(|error| map_windows_error("ICodecAPI::SetValue", error))?;
+    if !codec_api_property_is_writable(codec_api, property) {
+        return Ok(());
     }
-    Ok(())
+
+    let mut variant = variant_bool(value);
+    match unsafe { codec_api.SetValue(property, &mut variant) } {
+        Ok(()) => Ok(()),
+        Err(error) if error.code().0 == 0x80070057u32 as i32 => Ok(()),
+        Err(error) => Err(map_windows_error("ICodecAPI::SetValue", error)),
+    }
+}
+
+fn codec_api_property_is_writable(
+    codec_api: &ICodecAPI,
+    property: &windows::core::GUID,
+) -> bool {
+    unsafe { codec_api.IsSupported(property).is_ok() && codec_api.IsModifiable(property).is_ok() }
 }
 
 fn variant_u32(value: u32) -> VARIANT {

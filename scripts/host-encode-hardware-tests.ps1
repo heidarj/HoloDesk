@@ -22,6 +22,7 @@ try {
     $arguments += '--'
     $arguments += '--ignored'
     $arguments += '--nocapture'
+    $arguments += '--test-threads=1'
 
     & cargo @arguments
 }
