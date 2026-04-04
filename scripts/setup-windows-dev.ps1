@@ -127,7 +127,8 @@ Write-Host "=== Setup Complete ===" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor White
 Write-Host "  1. From your Mac, test SSH:  ssh $env:USERNAME@<LAN_IP>"
-Write-Host "  2. Build the transport:      ssh $env:USERNAME@<LAN_IP> 'cd C:\Users\$env:USERNAME\source\HoloDesk\host\transport && cargo build --bins'"
-Write-Host "  3. Run the QUIC server:      .\scripts\host-transport-server.ps1 -Bind 0.0.0.0"
-Write-Host "  4. Connect from Mac/AVP:     Use <LAN_IP>:$Port as the host address"
+Write-Host "  2. Build capture on Windows: .\scripts\host-capture-build.ps1"
+Write-Host "  3. Smoke DXGI capture:       .\scripts\host-capture-smoke.ps1"
+Write-Host "  4. Run QUIC server later:    .\scripts\host-transport-server.ps1 -Bind 0.0.0.0"
+Write-Host "  5. Connect from Mac/AVP:     Use <LAN_IP>:$Port as the host address"
 Write-Host ""

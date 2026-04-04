@@ -1,0 +1,25 @@
+[package]
+name = "holobridge-capture"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+
+[lib]
+name = "holobridge_capture"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dxgi_capture_smoke"
+path = "src/bin/dxgi_capture_smoke.rs"
+
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+] }

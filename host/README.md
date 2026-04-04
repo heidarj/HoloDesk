@@ -4,7 +4,9 @@
 
 ## Status
 
-**Pre-implementation.** Directory structure is scaffolded. Implementation begins at Milestone 1.
+Milestones 1 through 3 are complete. Milestone 4 is in progress with a new
+`capture/` crate that defines the host-side capture interfaces and the DXGI
+Desktop Duplication path.
 
 ## Planned Structure
 
@@ -34,9 +36,9 @@ host/
 See [../docs/streaming-v1.md](../docs/streaming-v1.md) for the full architecture spec.  
 See [../.github/instructions/host.instructions.md](../.github/instructions/host.instructions.md) for coding instructions.
 
-## TODO (Milestone 1)
+## Current Focus
 
-- [x] Select QUIC library (quinn — pure Rust, see ADR 0003)
-- [x] Scaffold QUIC server in `transport/`
-- [x] Implement minimal control stream message exchange
-- [x] Verify loopback connectivity with client
+- [x] QUIC transport in `transport/`
+- [x] Apple auth and local authorization in `auth/`
+- [x] Session lifecycle and resume tokens in `session/`
+- [ ] DXGI display enumeration and GPU texture capture in `capture/`

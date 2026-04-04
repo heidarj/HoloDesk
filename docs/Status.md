@@ -23,6 +23,11 @@ Milestone 3 is complete. The host now creates logical stream sessions after auth
 
 ## Latest Changes
 
+- Added `host/capture/` as a new workspace crate with a cross-platform `CaptureBackend` / `CaptureSession` API, `DisplayInfo` and `CapturedFrame` types, a non-Windows unsupported stub, and a Windows-only `DxgiCaptureBackend`.
+- Implemented Windows DXGI display enumeration and Desktop Duplication session opening in the capture crate, including explicit `DisplayId` selection, primary-display selection, GPU-resident `ID3D11Texture2D` frame acquisition, and automatic `ReleaseFrame` handling.
+- Added `dxgi_capture_smoke` as a capture smoke binary that can list displays or open a target display and report frame cadence, timeouts, and final frame dimensions without CPU readback.
+- Added milestone-4 workflow scripts: `host-capture-build.ps1`, `host-capture-test.ps1`, `host-capture-smoke.ps1`, and `mac-remote-host-capture.sh` for the push -> SSH -> pull -> build/test/run loop against a native Windows clone.
+- Updated the Windows setup guidance and host documentation to reflect the new remote Windows capture workflow and the capture crate’s role in the host workspace.
 - Added `host/session/` as a new workspace crate with in-memory `SessionManager`, explicit `Active/Held/Terminated` session states, reconnect counters, 60-minute hold windows, and one-time resume-token rotation.
 - Added `host/auth/src/resume_token.rs` plus new `AuthConfig` settings for `HOLOBRIDGE_AUTH_RESUME_TOKEN_TTL` and `HOLOBRIDGE_AUTH_RESUME_TOKEN_SECRET`. Resume tokens are now HMAC-SHA256 signed opaque payloads carrying `session_id`, `expires_at_unix_secs`, and a nonce.
 - Extended the Rust control protocol with `resume_session` and `resume_result`, and extended successful `auth_result` payloads with `session_id`, `resume_token`, and `resume_token_ttl_secs`.
@@ -71,21 +76,32 @@ Milestone 3 is complete. The host now creates logical stream sessions after auth
 - [x] Manual end-to-end Apple auth validation succeeded on a real Apple Vision Pro.
 - [x] Manual end-to-end session resume validation succeeded on a real Apple Vision Pro; the server logs confirmed `resume_session` handling and `reconnect_count=1`.
 
+### Milestone 4
+
+- [ ] Native Windows console-session validation is still required for DXGI enumeration and capture acceptance.
+- [x] `host/capture/` now exists as a new workspace crate with the planned `CaptureBackend` and `CaptureSession` interfaces plus a `dxgi_capture_smoke` binary.
+- [x] `cargo test` in `host/` still passes on macOS with the new capture crate compiled through its non-Windows stub path.
+- [x] `cargo build -p holobridge-capture --bin dxgi_capture_smoke` succeeds on macOS via the non-Windows stub implementation.
+- [x] `cargo check -p holobridge-capture --target x86_64-pc-windows-msvc` succeeds on macOS after installing the Windows target, confirming the DXGI backend type-checks against the Windows bindings.
+- [x] `bash -n scripts/mac-remote-host-capture.sh` succeeds, confirming the remote orchestration script is shell-valid on macOS.
+- [x] The repo now includes a remote Windows workflow for `build`, `test`, and `smoke` actions against a native Windows clone.
+
 ---
 
 ## Known Limitations
 
+- Milestone 4 has not yet been run on the Windows desktop from this workspace, so DXGI enumeration, duplication, and access-loss handling remain unverified until the new remote workflow is exercised against a real console session.
+- The capture crate intentionally exposes GPU textures only on Windows. Non-Windows builds compile for workspace health, but all capture entrypoints return `UnsupportedPlatform`.
 - Authorization is still effectively first-user bootstrap by default; there is no explicit admin flow yet for reviewing or pre-registering Apple `sub` values.
 - Resume state is memory-only on both sides in Milestone 3. If the host process or the app restarts, the user must authenticate again.
-- The visionOS transport client still has pre-existing concurrency/deprecation warnings in `NetworkFrameworkQuicClient.swift`; they do not block Milestone 3 validation but should be cleaned up before tightening Swift 6 checks.
 
 ---
 
 ## Next Recommended Step
 
-1. Start Milestone 4 by scaffolding `host/capture/` as a Rust crate in the host workspace.
-2. Implement display enumeration for the primary DXGI path and define the `ICaptureBackend`-style interface boundary for future backends.
-3. Add a minimal validation path that enumerates displays and proves frame acquisition can be opened for the target display.
+1. Push the current branch and run `scripts/mac-remote-host-capture.sh build`, `test`, and `smoke` against the native Windows clone while the Windows machine stays on a real logged-in console session.
+2. If the smoke run succeeds on Windows, update the milestone 4 execution log with the native validation results and close out Milestone 4.
+3. Begin Milestone 5 by adding the H.264 encoder pipeline that consumes the GPU-resident textures exposed by `holobridge-capture`.
 
 ---
 
