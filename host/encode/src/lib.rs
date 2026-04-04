@@ -223,6 +223,28 @@ pub(crate) fn pack_ratio_u64(
     ((u64::from(numerator)) << 32) | u64::from(denominator)
 }
 
+pub(crate) fn h264_sequence_header_to_annex_b(
+    config: &[u8],
+) -> Result<(usize, Vec<u8>), EncodeError> {
+    if looks_like_annex_b(config) {
+        return Ok((4, config.to_vec()));
+    }
+
+    if config.first() == Some(&1) {
+        return avcc_sequence_header_to_annex_b(config);
+    }
+
+    if let Some((nal_length_size, annex_b)) =
+        try_length_prefixed_parameter_sets_to_annex_b(config)?
+    {
+        return Ok((nal_length_size, annex_b));
+    }
+
+    Err(EncodeError::Bitstream(
+        "unsupported H.264 sequence header format".to_owned(),
+    ))
+}
+
 pub(crate) fn avcc_sequence_header_to_annex_b(
     config: &[u8],
 ) -> Result<(usize, Vec<u8>), EncodeError> {
@@ -375,6 +397,24 @@ pub(crate) fn length_prefixed_h264_to_annex_b(
     Ok(annex_b)
 }
 
+fn try_length_prefixed_parameter_sets_to_annex_b(
+    payload: &[u8],
+) -> Result<Option<(usize, Vec<u8>)>, EncodeError> {
+    for nal_length_size in (1..=4).rev() {
+        let Ok(annex_b) =
+            length_prefixed_h264_to_annex_b(payload, nal_length_size)
+        else {
+            continue;
+        };
+
+        if annex_b_contains_only_parameter_sets(&annex_b) {
+            return Ok(Some((nal_length_size, annex_b)));
+        }
+    }
+
+    Ok(None)
+}
+
 fn annex_b_starts_with_parameter_set(payload: &[u8]) -> bool {
     let Some(nal_type) = first_annex_b_nal_type(payload) else {
         return false;
@@ -382,18 +422,53 @@ fn annex_b_starts_with_parameter_set(payload: &[u8]) -> bool {
     matches!(nal_type, 7 | 8)
 }
 
-fn first_annex_b_nal_type(payload: &[u8]) -> Option<u8> {
-    let mut offset = 0usize;
-    while offset + 3 < payload.len() {
-        if payload[offset..].starts_with(&[0, 0, 1]) {
-            return payload.get(offset + 3).map(|value| value & 0x1f);
+fn annex_b_contains_only_parameter_sets(payload: &[u8]) -> bool {
+    let mut found_parameter_set = false;
+
+    for nal_type in annex_b_nal_types(payload) {
+        match nal_type {
+            7 | 8 => found_parameter_set = true,
+            _ => return false,
         }
-        if payload[offset..].starts_with(&[0, 0, 0, 1]) {
-            return payload.get(offset + 4).map(|value| value & 0x1f);
-        }
-        offset += 1;
     }
-    None
+
+    found_parameter_set
+}
+
+fn first_annex_b_nal_type(payload: &[u8]) -> Option<u8> {
+    annex_b_nal_types(payload).next()
+}
+
+fn annex_b_nal_types(payload: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    AnnexBNalTypeIter { payload, offset: 0 }
+}
+
+struct AnnexBNalTypeIter<'a> {
+    payload: &'a [u8],
+    offset: usize,
+}
+
+impl Iterator for AnnexBNalTypeIter<'_> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.offset + 3 < self.payload.len() {
+            if self.payload[self.offset..].starts_with(&[0, 0, 1]) {
+                let nal_type =
+                    self.payload.get(self.offset + 3).map(|value| value & 0x1f);
+                self.offset += 3;
+                return nal_type;
+            }
+            if self.payload[self.offset..].starts_with(&[0, 0, 0, 1]) {
+                let nal_type =
+                    self.payload.get(self.offset + 4).map(|value| value & 0x1f);
+                self.offset += 4;
+                return nal_type;
+            }
+            self.offset += 1;
+        }
+        None
+    }
 }
 
 fn read_u16(
@@ -415,8 +490,8 @@ fn read_u16(
 mod tests {
     use super::{
         assemble_annex_b_access_unit, avcc_sequence_header_to_annex_b,
-        length_prefixed_h264_to_annex_b, recommended_bitrate_bps,
-        H264Profile, VideoEncoderConfig,
+        h264_sequence_header_to_annex_b, length_prefixed_h264_to_annex_b,
+        recommended_bitrate_bps, H264Profile, VideoEncoderConfig,
     };
     use std::time::Duration;
 
@@ -473,6 +548,38 @@ mod tests {
             vec![
                 0, 0, 0, 1, 0x67, 0x4d, 0x40, 0x1f, 0, 0, 0, 1, 0x68,
                 0xee, 0x06, 0, 0, 0, 1, 0x65, 0x88,
+            ]
+        );
+    }
+
+    #[test]
+    fn sequence_header_helper_accepts_annex_b_input() {
+        let sequence_header = [
+            0, 0, 0, 1, 0x67, 0x4d, 0x40, 0x1f, 0, 0, 0, 1, 0x68,
+            0xee, 0x06,
+        ];
+        let (nal_length_size, annex_b_header) =
+            h264_sequence_header_to_annex_b(&sequence_header).unwrap();
+
+        assert_eq!(nal_length_size, 4);
+        assert_eq!(annex_b_header, sequence_header);
+    }
+
+    #[test]
+    fn sequence_header_helper_accepts_length_prefixed_parameter_sets() {
+        let sequence_header = [
+            0x00, 0x00, 0x00, 0x04, 0x67, 0x4d, 0x40, 0x1f, 0x00, 0x00,
+            0x00, 0x03, 0x68, 0xee, 0x06,
+        ];
+        let (nal_length_size, annex_b_header) =
+            h264_sequence_header_to_annex_b(&sequence_header).unwrap();
+
+        assert_eq!(nal_length_size, 4);
+        assert_eq!(
+            annex_b_header,
+            vec![
+                0, 0, 0, 1, 0x67, 0x4d, 0x40, 0x1f, 0, 0, 0, 1, 0x68,
+                0xee, 0x06,
             ]
         );
     }

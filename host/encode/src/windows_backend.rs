@@ -79,7 +79,7 @@ use windows::{
 };
 
 use crate::{
-    assemble_annex_b_access_unit, avcc_sequence_header_to_annex_b,
+    assemble_annex_b_access_unit, h264_sequence_header_to_annex_b,
     pack_ratio_u64, EncodeError, EncodedAccessUnit, H264Profile,
     VideoEncoder, VideoEncoderConfig,
 };
@@ -877,7 +877,7 @@ fn read_sequence_header(
             .GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut blob, None)
             .map_err(|error| map_windows_error("IMFMediaType::GetBlob(MF_MT_MPEG_SEQUENCE_HEADER)", error))?;
     }
-    avcc_sequence_header_to_annex_b(&blob)
+    h264_sequence_header_to_annex_b(&blob)
 }
 
 fn copy_buffer_bytes(
