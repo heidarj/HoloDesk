@@ -11,8 +11,8 @@ use std::{
 
 #[cfg(windows)]
 use holobridge_capture::{
-    CaptureBackend, CaptureConfig, CaptureTarget, DisplayId,
-    DxgiCaptureBackend,
+    CaptureBackend, CaptureConfig, CaptureSession, CaptureTarget,
+    CapturedFrame, DisplayId, DxgiCaptureBackend,
 };
 #[cfg(windows)]
 use holobridge_encode::{
@@ -50,17 +50,22 @@ fn run() -> Result<(), String> {
             .map_err(|error| error.to_string())?;
 
         let display_info = capture.display_info().clone();
+        let first_frame = wait_for_first_frame(
+            capture.as_mut(),
+            Duration::from_secs(options.first_frame_timeout_seconds),
+        )?;
+        let first_frame_metadata = first_frame.metadata();
         let bitrate_bps = options.bitrate_bps.unwrap_or_else(|| {
             recommended_bitrate_bps(
-                display_info.desktop_bounds.width(),
-                display_info.desktop_bounds.height(),
+                first_frame_metadata.width,
+                first_frame_metadata.height,
                 options.frame_rate_num,
                 options.frame_rate_den,
             )
         });
         let config = VideoEncoderConfig::new(
-            display_info.desktop_bounds.width(),
-            display_info.desktop_bounds.height(),
+            first_frame_metadata.width,
+            first_frame_metadata.height,
             bitrate_bps,
             options.frame_rate_num,
             options.frame_rate_den,
@@ -88,6 +93,21 @@ fn run() -> Result<(), String> {
         let mut total_bytes = 0u64;
         let mut encode_latency_total = Duration::ZERO;
         let mut capture_timeouts = 0u64;
+        let mut frame_width = first_frame_metadata.width;
+        let mut frame_height = first_frame_metadata.height;
+
+        let started = Instant::now();
+        let access_units =
+            encoder.encode(&first_frame).map_err(|error| error.to_string())?;
+        encode_latency_total += started.elapsed();
+        for access_unit in access_units {
+            file.write_all(&access_unit.data).map_err(|error| {
+                format!("failed to write output stream: {error}")
+            })?;
+            encoded_frames += 1;
+            keyframes += u64::from(access_unit.is_keyframe);
+            total_bytes += access_unit.data.len() as u64;
+        }
 
         while Instant::now() < deadline {
             let Some(frame) = capture
@@ -97,6 +117,9 @@ fn run() -> Result<(), String> {
                 capture_timeouts += 1;
                 continue;
             };
+            let metadata = frame.metadata();
+            frame_width = metadata.width;
+            frame_height = metadata.height;
 
             let started = Instant::now();
             let access_units =
@@ -137,6 +160,12 @@ fn run() -> Result<(), String> {
             "selected_display: {} ({})",
             display_info.output_name, display_info.id
         );
+        println!(
+            "display_bounds: {}x{}",
+            display_info.desktop_bounds.width(),
+            display_info.desktop_bounds.height()
+        );
+        println!("capture_frame_size: {frame_width}x{frame_height}");
         println!("output_file: {}", options.output.display());
         println!("encoded_frames: {encoded_frames}");
         println!("keyframes: {keyframes}");
@@ -158,6 +187,7 @@ struct SmokeOptions {
     bitrate_bps: Option<u32>,
     frame_rate_num: u32,
     frame_rate_den: u32,
+    first_frame_timeout_seconds: u64,
 }
 
 #[cfg(windows)]
@@ -173,6 +203,7 @@ impl SmokeOptions {
             bitrate_bps: None,
             frame_rate_num: 60,
             frame_rate_den: 1,
+            first_frame_timeout_seconds: 2,
         };
 
         while let Some(argument) = arguments.next() {
@@ -249,6 +280,20 @@ impl SmokeOptions {
                             format!("invalid frame-rate denominator: {error}")
                         })?;
                 }
+                "--first-frame-timeout-seconds" => {
+                    options.first_frame_timeout_seconds = arguments
+                        .next()
+                        .ok_or_else(|| {
+                            "--first-frame-timeout-seconds requires a value"
+                                .to_owned()
+                        })?
+                        .parse::<u64>()
+                        .map_err(|error| {
+                            format!(
+                                "invalid --first-frame-timeout-seconds value: {error}"
+                            )
+                        })?;
+                }
                 "--help" | "-h" => {
                     return Err(Self::usage().to_owned());
                 }
@@ -277,6 +322,27 @@ impl SmokeOptions {
     }
 
     fn usage() -> &'static str {
-        "usage: h264_encode_smoke [--display-id <adapter_luid:output_index>] [--duration-seconds <n>] [--timeout-ms <n>] [--output <path>] [--bitrate-bps <n>] [--frame-rate <num/den>]"
+        "usage: h264_encode_smoke [--display-id <adapter_luid:output_index>] [--duration-seconds <n>] [--timeout-ms <n>] [--output <path>] [--bitrate-bps <n>] [--frame-rate <num/den>] [--first-frame-timeout-seconds <n>]"
     }
+}
+
+#[cfg(windows)]
+fn wait_for_first_frame(
+    capture: &mut dyn CaptureSession,
+    timeout: Duration,
+) -> Result<CapturedFrame, String> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Some(frame) = capture
+            .acquire_frame()
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(frame);
+        }
+    }
+
+    Err(format!(
+        "timed out waiting {:?} for the first captured frame; keep the Windows desktop active",
+        timeout
+    ))
 }

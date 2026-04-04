@@ -2,6 +2,7 @@ param(
     [string]$DisplayId,
     [int]$DurationSeconds = 5,
     [int]$TimeoutMs = 16,
+    [int]$FirstFrameTimeoutSeconds = 2,
     [string]$Output = 'holobridge-smoke.h264',
     [Nullable[int]]$BitrateBps = $null,
     [string]$FrameRate = '60/1'
@@ -23,6 +24,7 @@ try {
     $arguments = @(
         '--duration-seconds', [string]$DurationSeconds,
         '--timeout-ms', [string]$TimeoutMs,
+        '--first-frame-timeout-seconds', [string]$FirstFrameTimeoutSeconds,
         '--output', $Output,
         '--frame-rate', $FrameRate
     )
