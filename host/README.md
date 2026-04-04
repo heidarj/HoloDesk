@@ -4,9 +4,9 @@
 
 ## Status
 
-Milestones 1 through 3 are complete. Milestone 4 is in progress with a new
-`capture/` crate that defines the host-side capture interfaces and the DXGI
-Desktop Duplication path.
+Milestones 1 through 4 are complete. Milestone 5 is in progress with a new
+`encode/` crate that consumes GPU-resident capture textures and drives the
+Windows Media Foundation H.264 encode path.
 
 ## Planned Structure
 
@@ -41,4 +41,5 @@ See [../.github/instructions/host.instructions.md](../.github/instructions/host.
 - [x] QUIC transport in `transport/`
 - [x] Apple auth and local authorization in `auth/`
 - [x] Session lifecycle and resume tokens in `session/`
-- [ ] DXGI display enumeration and GPU texture capture in `capture/`
+- [x] DXGI display enumeration and GPU texture capture in `capture/`
+- [ ] Media Foundation H.264 encode path in `encode/`

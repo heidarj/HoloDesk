@@ -15,7 +15,8 @@ use windows::{
         Graphics::{
             Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
             Direct3D11::{
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
                 D3D11_TEXTURE2D_DESC, D3D11CreateDevice, ID3D11Device,
                 ID3D11Texture2D,
             },
@@ -81,7 +82,7 @@ impl CaptureBackend for DxgiCaptureBackend {
 
         Ok(Box::new(DxgiCaptureSession {
             display_info: selected.info,
-            _device: device,
+            device,
             duplication,
             config,
             outstanding_release: None,
@@ -113,7 +114,7 @@ impl WindowsFrame {
 
 struct DxgiCaptureSession {
     display_info: DisplayInfo,
-    _device: ID3D11Device,
+    device: ID3D11Device,
     duplication: IDXGIOutputDuplication,
     config: CaptureConfig,
     outstanding_release: Option<Arc<FrameRelease>>,
@@ -180,6 +181,10 @@ impl CaptureSession for DxgiCaptureSession {
             },
             WindowsFrame::new(texture, release),
         )))
+    }
+
+    fn d3d11_device(&self) -> ID3D11Device {
+        self.device.clone()
     }
 }
 
@@ -315,7 +320,7 @@ fn create_device_for_adapter(
             &adapter,
             D3D_DRIVER_TYPE_UNKNOWN,
             HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
             None,
             D3D11_SDK_VERSION,
             Some(&mut device),

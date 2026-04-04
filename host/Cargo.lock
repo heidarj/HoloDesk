@@ -384,6 +384,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "holobridge-encode"
+version = "0.1.0"
+dependencies = [
+ "holobridge-capture",
+ "windows",
+]
+
+[[package]]
 name = "holobridge-session"
 version = "0.1.0"
 dependencies = [

@@ -22,8 +22,9 @@ Implemented the Milestone 4 capture scaffolding and primary DXGI Desktop Duplica
 - `cargo build -p holobridge-capture --bin dxgi_capture_smoke` succeeded on macOS via the non-Windows stub path.
 - `bash -n scripts/mac-remote-host-capture.sh` succeeded, validating the remote orchestration script syntax on macOS.
 - `cargo check -p holobridge-capture --target x86_64-pc-windows-msvc` succeeded after installing the Windows Rust target locally, confirming the DXGI backend type-checks against the Windows bindings from this Mac.
-- Native Windows validation is still pending from this workspace. The acceptance run must execute `build`, `test`, and `smoke` against a real logged-in Windows console session with an attached display.
+- Native Windows console-session validation was completed afterward on the Windows desktop. The capture smoke run matched the real display geometry (`2560x1440`), and with active video playback it reached `182` captured frames over `3` seconds with `16.63 ms` average cadence, which matches a 60 Hz desktop update rate.
+- A display-state change was also exercised manually, and the smoke path exited cleanly with `desktop duplication access was lost`, confirming the milestone-4 requirement to surface `DXGI_ERROR_ACCESS_LOST` without hanging or crashing.
 
 ## Result
 
-Milestone 4 implementation is in place in the repo, but native Windows acceptance is not yet recorded in this workspace. The next required step is to run the new remote workflow against the Windows desktop and confirm DXGI enumeration, duplication, frame acquisition, and access-loss behavior on a real console session.
+Milestone 4 is complete. The repo now contains the DXGI capture crate plus the remote Windows workflow, and real Windows console-session validation confirmed enumeration, duplication, target-rate GPU texture acquisition, correct frame sizing, and clean access-loss handling.

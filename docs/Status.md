@@ -4,9 +4,9 @@
 
 ## Current Milestone
 
-**Milestone 4 – Display Enumeration + DXGI Capture**
+**Milestone 5 – Media Foundation H.264 Encode Path**
 
-Milestone 3 is complete. The host now creates logical stream sessions after auth, issues 60-minute resume tokens proactively, holds sessions on unexpected disconnect, and resumes them on a later QUIC connection. The visionOS client stores the current session token in memory, attempts one automatic resume on unexpected transport loss, and retries resume before full auth on the next user-triggered connect. Manual end-to-end validation has now succeeded for both Apple identity-token auth and session resume on real hardware.
+Milestones 1 through 4 are complete. The host now enumerates Windows displays, opens DXGI Desktop Duplication in a real Windows console session, acquires GPU-resident desktop textures at the active display cadence, and surfaces `DXGI_ERROR_ACCESS_LOST` cleanly on display-state changes. Milestone 5 is now implemented in code with a new Media Foundation H.264 encoder crate and remote Windows encode workflow, but its Windows smoke run and `ffprobe` validation are still pending.
 
 ---
 
@@ -18,11 +18,18 @@ Milestone 3 is complete. The host now creates logical stream sessions after auth
 | 1 | QUIC transport skeleton | ✅ |
 | 2 | Sign in with Apple + host authorization | ✅ |
 | 3 | Stream lifecycle + resume token | ✅ |
+| 4 | Display enumeration + DXGI capture | ✅ |
 
 ---
 
 ## Latest Changes
 
+- Added `host/encode/` as a new workspace crate with the public `VideoEncoder` surface, `VideoEncoderConfig`, `EncodedAccessUnit`, `EncodeError`, `H264Profile`, and a Windows-only `MfH264Encoder` backed by Media Foundation hardware H.264 MFTs.
+- Extended `host/capture/` so Windows capture sessions now expose their underlying `ID3D11Device`, and updated the DXGI capture device creation flags to include D3D11 video support for downstream GPU-only encoding.
+- Implemented a Windows-only GPU BGRA -> NV12 conversion stage using the D3D11 video processor and kept the encode path GPU-resident by wrapping NV12 textures with `MFCreateDXGISurfaceBuffer` instead of doing CPU readback.
+- Added `h264_encode_smoke` to open capture on the primary or explicit display, encode a bounded run to a raw `.h264` Annex-B stream, and report encoded-frame count, keyframes, total bytes, average encode latency, and effective bitrate.
+- Added milestone-5 workflow scripts: `host-encode-build.ps1`, `host-encode-test.ps1`, `host-encode-smoke.ps1`, and `mac-remote-host-encode.sh`, and extended the Windows setup guidance to include the new encode workflow.
+- Recorded native Windows milestone-4 validation in the execution log and status: real console-session smoke succeeded, active-motion capture reached the display’s 60 Hz limit, and access loss exits cleanly with `desktop duplication access was lost`.
 - Added `host/capture/` as a new workspace crate with a cross-platform `CaptureBackend` / `CaptureSession` API, `DisplayInfo` and `CapturedFrame` types, a non-Windows unsupported stub, and a Windows-only `DxgiCaptureBackend`.
 - Implemented Windows DXGI display enumeration and Desktop Duplication session opening in the capture crate, including explicit `DisplayId` selection, primary-display selection, GPU-resident `ID3D11Texture2D` frame acquisition, and automatic `ReleaseFrame` handling.
 - Added `dxgi_capture_smoke` as a capture smoke binary that can list displays or open a target display and report frame cadence, timeouts, and final frame dimensions without CPU readback.
@@ -78,20 +85,33 @@ Milestone 3 is complete. The host now creates logical stream sessions after auth
 
 ### Milestone 4
 
-- [ ] Native Windows console-session validation is still required for DXGI enumeration and capture acceptance.
+- [x] Native Windows console-session validation succeeded on the Windows desktop with an attached display and no RDP session in the acceptance path.
 - [x] `host/capture/` now exists as a new workspace crate with the planned `CaptureBackend` and `CaptureSession` interfaces plus a `dxgi_capture_smoke` binary.
 - [x] `cargo test` in `host/` still passes on macOS with the new capture crate compiled through its non-Windows stub path.
 - [x] `cargo build -p holobridge-capture --bin dxgi_capture_smoke` succeeds on macOS via the non-Windows stub implementation.
 - [x] `cargo check -p holobridge-capture --target x86_64-pc-windows-msvc` succeeds on macOS after installing the Windows target, confirming the DXGI backend type-checks against the Windows bindings.
 - [x] `bash -n scripts/mac-remote-host-capture.sh` succeeds, confirming the remote orchestration script is shell-valid on macOS.
 - [x] The repo now includes a remote Windows workflow for `build`, `test`, and `smoke` actions against a native Windows clone.
+- [x] Real Windows smoke validation confirmed correct output dimensions (`2560x1440`), reached `182` captured frames over `3` seconds with `16.63 ms` average cadence while video was playing, and cleanly surfaced `desktop duplication access was lost` when the display state changed.
+
+### Milestone 5
+
+- [ ] Native Windows H.264 smoke validation and `ffprobe -f h264` validation are still required for milestone acceptance.
+- [x] `host/encode/` now exists as a new workspace crate with the planned encoder API plus a `h264_encode_smoke` binary.
+- [x] `cargo test` in `host/` still passes on macOS with the new encode crate compiled through its non-Windows stub path.
+- [x] `cargo test -p holobridge-encode` passes on macOS, including config, GOP, bitrate, and Annex-B helper tests.
+- [x] `cargo build -p holobridge-encode --bin h264_encode_smoke` succeeds on macOS via the unsupported-platform stub path.
+- [x] `cargo check -p holobridge-encode --target x86_64-pc-windows-msvc` succeeds on macOS, confirming the Media Foundation / D3D11 backend type-checks against the Windows bindings.
+- [x] `bash -n scripts/mac-remote-host-encode.sh` succeeds, confirming the remote encode orchestration script is shell-valid on macOS.
+- [x] Windows-only ignored hardware tests now exist under `host/encode/tests/` for encoder creation, short-run encode output, and keyframe presence.
 
 ---
 
 ## Known Limitations
 
-- Milestone 4 has not yet been run on the Windows desktop from this workspace, so DXGI enumeration, duplication, and access-loss handling remain unverified until the new remote workflow is exercised against a real console session.
 - The capture crate intentionally exposes GPU textures only on Windows. Non-Windows builds compile for workspace health, but all capture entrypoints return `UnsupportedPlatform`.
+- Milestone 5 has not yet been run on the Windows desktop from this workspace, so hardware H.264 encoder availability, real encode throughput, `.h264` output validity, and `ffprobe` acceptance are not yet recorded.
+- The Media Foundation backend currently selects the first compatible hardware H.264 MFT. There is no vendor-specific encoder selection or capability ranking yet.
 - Authorization is still effectively first-user bootstrap by default; there is no explicit admin flow yet for reviewing or pre-registering Apple `sub` values.
 - Resume state is memory-only on both sides in Milestone 3. If the host process or the app restarts, the user must authenticate again.
 
@@ -99,12 +119,12 @@ Milestone 3 is complete. The host now creates logical stream sessions after auth
 
 ## Next Recommended Step
 
-1. Push the current branch and run `scripts/mac-remote-host-capture.sh build`, `test`, and `smoke` against the native Windows clone while the Windows machine stays on a real logged-in console session.
-2. If the smoke run succeeds on Windows, update the milestone 4 execution log with the native validation results and close out Milestone 4.
-3. Begin Milestone 5 by adding the H.264 encoder pipeline that consumes the GPU-resident textures exposed by `holobridge-capture`.
+1. Push the current branch and run `scripts/mac-remote-host-encode.sh build`, `test`, and `smoke` against the native Windows clone while the Windows machine stays on a real logged-in console session with an attached display.
+2. Validate the generated `.h264` output with `ffprobe -f h264 <output.h264>` and confirm encoded access units, keyframes, bitrate, and latency are reasonable while the desktop is visibly changing.
+3. If the encode smoke run succeeds on Windows, add the native validation results to the milestone 5 execution log and move on to milestone 6 transport of encoded access units.
 
 ---
 
 ## Blockers
 
-- No code blocker is currently known for Milestone 4 planning or scaffolding.
+- No code blocker is currently known for Milestone 5 implementation. The remaining work is native Windows validation.

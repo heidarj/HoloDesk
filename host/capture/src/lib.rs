@@ -6,7 +6,9 @@ use std::{
 };
 
 #[cfg(windows)]
-use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+use windows::Win32::Graphics::Direct3D11::{
+    ID3D11Device, ID3D11Texture2D,
+};
 
 #[cfg(not(windows))]
 mod stub_backend;
@@ -194,6 +196,9 @@ pub trait CaptureSession {
     fn display_info(&self) -> &DisplayInfo;
 
     fn acquire_frame(&mut self) -> Result<Option<CapturedFrame>, CaptureError>;
+
+    #[cfg(windows)]
+    fn d3d11_device(&self) -> ID3D11Device;
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]

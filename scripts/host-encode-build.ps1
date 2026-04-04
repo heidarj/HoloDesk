@@ -3,11 +3,11 @@ param()
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$captureDir = Join-Path $repoRoot 'host\capture'
+$hostDir = Join-Path $repoRoot 'host'
 
-Push-Location $captureDir
+Push-Location $hostDir
 try {
-    cargo test
+    cargo build -p holobridge-encode --bin h264_encode_smoke
 }
 finally {
     Pop-Location

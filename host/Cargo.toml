@@ -1,3 +1,3 @@
 [workspace]
-members = ["transport", "auth", "session", "capture"]
+members = ["transport", "auth", "session", "capture", "encode"]
 resolver = "2"

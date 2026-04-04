@@ -19,6 +19,10 @@ $env:HOLOBRIDGE_TRANSPORT_ALLOW_INSECURE_CERT = if ($AllowInsecureCert) { 'true'
 $env:HOLOBRIDGE_TRANSPORT_CLIENT_SEND_GOODBYE = if ($ClientSendGoodbye) { 'true' } else { 'false' }
 $env:HOLOBRIDGE_TRANSPORT_SERVER_NAME = $ServerName
 
-Set-Location $transportDir
-
-& $binaryPath
+Push-Location $transportDir
+try {
+    & $binaryPath
+}
+finally {
+    Pop-Location
+}

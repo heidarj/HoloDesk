@@ -276,3 +276,29 @@ These are optional and should only be started after Milestone 9 is complete and 
 **10c – App Attest Enforcement**
 - Optionally require Apple App Attest assertion from the client as an additional trust signal.
 - Acceptance: Host can validate App Attest assertion; clients without attest still work in non-enforced mode.
+
+---
+
+## Milestone 11 – Capture Session Loss Recovery
+
+**Goal:** Recover cleanly when DXGI Desktop Duplication is invalidated by local display-state changes such as resolution changes, monitor reconnects, primary-display changes, or lock/unlock transitions.
+
+**Deliverables:**
+- `host/capture/` – explicit recovery path for `DXGI_ERROR_ACCESS_LOST` and missing-output scenarios
+- `host/session/` / host pipeline wiring – preserve the active stream session while capture is being recreated
+- `host/encode/` integration – recreate or rebind encoder input surfaces as needed after capture recovery
+- `host/transport/` integration – request a fresh keyframe / restart the video flow cleanly after recovery
+
+**Acceptance Criteria:**
+- A temporary display-state change does not require the user to re-authenticate or recreate the stream session.
+- On `DXGI_ERROR_ACCESS_LOST`, the host tears down the stale duplication session and attempts to recreate capture for the intended display target.
+- If the exact prior output is no longer available, the host either remaps according to explicit policy (for example, current primary display) or fails the stream with a clear error.
+- After successful recovery, frame capture resumes and the downstream video pipeline continues without process restart.
+- If recovery is impossible, the host terminates the active stream gracefully instead of hanging or crashing.
+
+**Validation Steps:**
+1. Start an active capture/encode/stream session.
+2. Change resolution or refresh rate; confirm capture recovers and the stream resumes.
+3. Disconnect and reconnect the monitor or change the primary display; confirm recovery or a clean terminal error.
+4. Lock and unlock the Windows session; confirm the host either resumes capture or shuts down the stream cleanly with a clear reason.
+5. Verify telemetry/logging records the access-loss event and the recovery outcome.
