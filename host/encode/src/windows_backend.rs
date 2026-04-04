@@ -206,29 +206,35 @@ impl VideoEncoder for MfH264Encoder {
             .next_pts_100ns
             .saturating_add(self.frame_duration_100ns);
 
-        match unsafe { self.transform.ProcessInput(INPUT_STREAM_ID, &sample, 0) }
-        {
-            Ok(()) => {
-                self.input_needed = false;
-            }
-            Err(error) if error.code() == MF_E_NOTACCEPTING => {
-                let mut output = self.drain_available_output()?;
-                self.pump_events()?;
-                unsafe {
-                    self.transform
-                        .ProcessInput(INPUT_STREAM_ID, &sample, 0)
-                        .map_err(|error| map_windows_error("IMFTransform::ProcessInput", error))?;
+        let mut encoded = Vec::new();
+        loop {
+            match unsafe { self.transform.ProcessInput(INPUT_STREAM_ID, &sample, 0) } {
+                Ok(()) => {
+                    self.input_needed = false;
+                    break;
                 }
-                self.input_needed = false;
-                output.extend(self.drain_available_output()?);
-                return Ok(output);
-            }
-            Err(error) => {
-                return Err(map_windows_error("IMFTransform::ProcessInput", error));
+                Err(error) if error.code() == MF_E_NOTACCEPTING => {
+                    let drained = self.drain_available_output()?;
+                    if drained.is_empty() {
+                        return Err(map_windows_error(
+                            "IMFTransform::ProcessInput",
+                            error,
+                        ));
+                    }
+                    encoded.extend(drained);
+                    self.pump_events()?;
+                }
+                Err(error) => {
+                    return Err(map_windows_error(
+                        "IMFTransform::ProcessInput",
+                        error,
+                    ));
+                }
             }
         }
 
-        self.drain_available_output()
+        encoded.extend(self.drain_available_output()?);
+        Ok(encoded)
     }
 
     fn flush(&mut self) -> Result<Vec<EncodedAccessUnit>, EncodeError> {
@@ -296,17 +302,15 @@ impl MfH264Encoder {
         let mut encoded = Vec::new();
         loop {
             self.pump_events()?;
-
-            if self.event_generator.is_some() && !self.output_pending {
-                break;
-            }
-
             match self.process_output_once()? {
                 Some(access_unit) => {
                     encoded.push(access_unit);
                     self.output_pending = false;
                 }
-                None => break,
+                None => {
+                    self.output_pending = false;
+                    break;
+                }
             }
         }
 
