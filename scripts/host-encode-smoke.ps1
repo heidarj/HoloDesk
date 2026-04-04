@@ -17,9 +17,7 @@ $binaryPath = Join-Path $workspaceTargetDir 'debug\h264_encode_smoke.exe'
 
 Push-Location $hostDir
 try {
-    if (-not (Test-Path $binaryPath)) {
-        cargo build -p holobridge-encode --bin h264_encode_smoke
-    }
+    cargo build -p holobridge-encode --bin h264_encode_smoke
 
     $arguments = @(
         '--duration-seconds', [string]$DurationSeconds,
