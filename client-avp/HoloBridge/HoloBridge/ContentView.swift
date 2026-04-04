@@ -19,7 +19,7 @@ struct ContentView: View {
             if !session.state.isConnected {
                 connectionForm
             } else {
-                disconnectButton
+                connectedActions
             }
         }
         .padding(40)
@@ -80,16 +80,30 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var disconnectButton: some View {
-        Button(role: .destructive) {
-            Task {
-                await session.disconnect()
+    private var connectedActions: some View {
+        VStack(spacing: 12) {
+            #if DEBUG
+            Button {
+                Task {
+                    await session.simulateNetworkDrop()
+                }
+            } label: {
+                Label("Simulate Network Drop", systemImage: "wifi.slash")
+                    .frame(maxWidth: 250)
             }
-        } label: {
-            Label("Disconnect", systemImage: "link.badge.xmark")
-                .frame(maxWidth: 250)
+            .buttonStyle(.bordered)
+            #endif
+
+            Button(role: .destructive) {
+                Task {
+                    await session.disconnect()
+                }
+            } label: {
+                Label("Disconnect", systemImage: "link.badge.xmark")
+                    .frame(maxWidth: 250)
+            }
+            .buttonStyle(.bordered)
         }
-        .buttonStyle(.bordered)
     }
 
     private var connectLabel: String {
@@ -102,7 +116,7 @@ struct ContentView: View {
 
     private var isConnecting: Bool {
         switch session.state {
-        case .connecting, .authenticating:
+        case .connecting, .authenticating, .resuming:
             return true
         default:
             return false
@@ -112,7 +126,7 @@ struct ContentView: View {
     private var statusColor: Color {
         switch session.state {
         case .disconnected: return .gray
-        case .connecting, .authenticating: return .yellow
+        case .connecting, .authenticating, .resuming: return .yellow
         case .connected: return .green
         case .error: return .red
         }

@@ -33,6 +33,7 @@ public protocol TransportClient: AnyObject, Sendable {
     var configuration: TransportConfiguration { get }
 
     func connect() async throws
+    func receive() async throws -> ControlMessage
     func send(_ message: ControlMessage) async throws
     func sendHello(
         clientName: String,
@@ -41,6 +42,8 @@ public protocol TransportClient: AnyObject, Sendable {
     func awaitHelloAck() async throws -> ControlMessage
     func sendAuthenticate(identityToken: String) async throws
     func awaitAuthResult() async throws -> ControlMessage
+    func sendResumeSession(resumeToken: String) async throws
+    func awaitResumeResult() async throws -> ControlMessage
     func close(reason: String?) async
 }
 
@@ -66,5 +69,9 @@ public extension TransportClient {
 
     func sendAuthenticate(identityToken: String) async throws {
         try await send(ControlMessage.authenticate(identityToken: identityToken))
+    }
+
+    func sendResumeSession(resumeToken: String) async throws {
+        try await send(ControlMessage.resumeSession(resumeToken: resumeToken))
     }
 }

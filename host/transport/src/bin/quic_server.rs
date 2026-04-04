@@ -29,7 +29,7 @@ async fn main() -> ExitCode {
     let summary = server.runtime_summary();
     info!(backend = summary.backend, endpoint = %summary.bind_endpoint, alpn = %summary.alpn, certificate = %summary.certificate, close_mode = summary.close_mode, "prepared host transport configuration");
 
-    match server.serve_once().await {
+    match server.serve().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             error!(error = %error, "host transport failed");

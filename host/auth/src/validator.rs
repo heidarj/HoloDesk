@@ -86,20 +86,19 @@ impl TokenValidator {
             validation.set_issuer(&[APPLE_ISSUER, "https://test.holobridge.local"]);
         }
 
-        let token_data = decode::<AppleIdentityClaims>(token, &decoding_key, &validation)
-            .map_err(|e| match e.kind() {
+        let token_data = decode::<AppleIdentityClaims>(token, &decoding_key, &validation).map_err(
+            |e| match e.kind() {
                 jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::TokenExpired,
-                jsonwebtoken::errors::ErrorKind::InvalidAudience => {
-                    AuthError::InvalidAudience {
-                        expected: self.expected_audience.clone(),
-                        actual: "token audience mismatch".to_owned(),
-                    }
-                }
+                jsonwebtoken::errors::ErrorKind::InvalidAudience => AuthError::InvalidAudience {
+                    expected: self.expected_audience.clone(),
+                    actual: "token audience mismatch".to_owned(),
+                },
                 jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
                     AuthError::InvalidIssuer("token issuer mismatch".to_owned())
                 }
                 _ => AuthError::TokenInvalid(e.to_string()),
-            })?;
+            },
+        )?;
 
         info!(sub = %token_data.claims.sub, "token validated successfully");
         Ok(token_data.claims)

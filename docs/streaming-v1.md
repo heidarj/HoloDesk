@@ -135,7 +135,7 @@ Apple's App Attest API can be used as an additional trust signal to verify the c
 ### Resume Token
 
 - When a QUIC session is interrupted, the host may issue a **stream-specific resume token**.
-- The token is short-lived (suggested: 60 seconds).
+- The token is short-lived (default: 60 minutes).
 - The token is scoped to one specific stream session.
 - The client presents the token when reconnecting to resume the same stream.
 - The token does not carry any authorization beyond resuming that one stream.
@@ -212,7 +212,7 @@ Client                                   Host
 |---|---|
 | Issuer | Host |
 | Scope | Single stream session |
-| Lifetime | Short-lived (suggested: 60 seconds) |
+| Lifetime | Short-lived (default: 60 minutes) |
 | Format | Opaque token (e.g., HMAC-SHA256 over session ID + expiry) |
 | Validation | Host checks token signature and expiry; invalidates after first successful use |
 | What it does NOT do | Does not authorize new streams, does not carry user identity claims |

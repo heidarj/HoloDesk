@@ -14,6 +14,10 @@ pub struct AuthConfig {
     pub test_mode: bool,
     /// Path to the PEM-encoded RSA public key for test mode.
     pub test_public_key_pem: Option<PathBuf>,
+    /// Lifetime of issued resume tokens in seconds.
+    pub resume_token_ttl_secs: u64,
+    /// Optional secret used to sign resume tokens.
+    pub resume_token_secret: Option<String>,
 }
 
 impl AuthConfig {
@@ -37,6 +41,11 @@ impl AuthConfig {
             test_public_key_pem: std::env::var("HOLOBRIDGE_AUTH_TEST_PUBLIC_KEY")
                 .ok()
                 .map(PathBuf::from),
+            resume_token_ttl_secs: std::env::var("HOLOBRIDGE_AUTH_RESUME_TOKEN_TTL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3600),
+            resume_token_secret: std::env::var("HOLOBRIDGE_AUTH_RESUME_TOKEN_SECRET").ok(),
         }
     }
 }

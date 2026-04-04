@@ -26,6 +26,7 @@ path = "src/bin/test_keygen.rs"
 
 [dependencies]
 holobridge-auth = { path = "../auth" }
+holobridge-session = { path = "../session" }
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 rcgen = "0.13"
@@ -34,3 +35,6 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+tempfile = "3"

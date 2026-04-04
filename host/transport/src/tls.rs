@@ -13,7 +13,8 @@ pub enum TlsConfigError {
 }
 
 /// Generate a self-signed certificate for localhost development.
-pub fn generate_self_signed_cert() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), TlsConfigError> {
+pub fn generate_self_signed_cert(
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), TlsConfigError> {
     let cert = generate_simple_self_signed(vec!["localhost".to_owned()])
         .map_err(|e| TlsConfigError::CertificateGeneration(e.to_string()))?;
     let key_der = PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
@@ -46,7 +47,10 @@ pub fn build_server_config(
 pub fn build_client_config(
     config: &TransportClientConfig,
 ) -> Result<quinn::ClientConfig, TlsConfigError> {
-    let mut rustls_config = if config.debug_validation.allow_insecure_certificate_validation {
+    let mut rustls_config = if config
+        .debug_validation
+        .allow_insecure_certificate_validation
+    {
         rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier))

@@ -33,6 +33,8 @@ pub struct TransportClientConfig {
     pub send_goodbye_after_ack: bool,
     /// Identity token to send during auth handshake (for smoke testing).
     pub identity_token: Option<String>,
+    /// Resume token to send during resume handshake (for smoke testing).
+    pub resume_token: Option<String>,
 }
 
 impl Default for CertificateSource {
@@ -50,7 +52,7 @@ impl Default for TransportServerConfig {
             certificate: CertificateSource::default(),
             debug_validation: DebugTlsSettings::default(),
             server_initiated_close_after_ack: false,
-            server_wait_timeout: Some(Duration::from_secs(60)),
+            server_wait_timeout: None,
         }
     }
 }
@@ -65,6 +67,7 @@ impl Default for TransportClientConfig {
             debug_validation: DebugTlsSettings::default(),
             send_goodbye_after_ack: true,
             identity_token: None,
+            resume_token: None,
         }
     }
 }
@@ -79,10 +82,14 @@ impl TransportServerConfig {
             alpn: env::var("HOLOBRIDGE_TRANSPORT_ALPN").unwrap_or_else(|_| defaults.alpn.clone()),
             certificate: CertificateSource::SelfSigned,
             debug_validation: DebugTlsSettings::from_env(),
-            server_initiated_close_after_ack: env_bool("HOLOBRIDGE_TRANSPORT_SERVER_CLOSE_AFTER_ACK")
-                .unwrap_or(defaults.server_initiated_close_after_ack),
-            server_wait_timeout: env_optional_duration_secs("HOLOBRIDGE_TRANSPORT_SERVER_WAIT_TIMEOUT_SECS")
-                .unwrap_or(defaults.server_wait_timeout),
+            server_initiated_close_after_ack: env_bool(
+                "HOLOBRIDGE_TRANSPORT_SERVER_CLOSE_AFTER_ACK",
+            )
+            .unwrap_or(defaults.server_initiated_close_after_ack),
+            server_wait_timeout: env_optional_duration_secs(
+                "HOLOBRIDGE_TRANSPORT_SERVER_WAIT_TIMEOUT_SECS",
+            )
+            .unwrap_or(defaults.server_wait_timeout),
         }
     }
 
@@ -106,6 +113,7 @@ impl TransportClientConfig {
             send_goodbye_after_ack: env_bool("HOLOBRIDGE_TRANSPORT_CLIENT_SEND_GOODBYE")
                 .unwrap_or(defaults.send_goodbye_after_ack),
             identity_token: env::var("HOLOBRIDGE_AUTH_IDENTITY_TOKEN").ok(),
+            resume_token: env::var("HOLOBRIDGE_AUTH_RESUME_TOKEN").ok(),
         }
     }
 

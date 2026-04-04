@@ -16,6 +16,10 @@ pub enum AuthError {
     JwksFetchError(String),
     /// No matching key ID found in JWKS.
     KeyNotFound(String),
+    /// Resume token failed validation or signature verification.
+    ResumeTokenInvalid(String),
+    /// Resume token has expired.
+    ResumeTokenExpired,
     /// Internal error (I/O, serialization, etc.).
     Internal(String),
 }
@@ -32,6 +36,8 @@ impl fmt::Display for AuthError {
             Self::UserNotAuthorized(sub) => write!(f, "user not authorized: {sub}"),
             Self::JwksFetchError(msg) => write!(f, "JWKS fetch error: {msg}"),
             Self::KeyNotFound(kid) => write!(f, "no matching key for kid: {kid}"),
+            Self::ResumeTokenInvalid(msg) => write!(f, "invalid resume token: {msg}"),
+            Self::ResumeTokenExpired => write!(f, "resume token has expired"),
             Self::Internal(msg) => write!(f, "internal auth error: {msg}"),
         }
     }

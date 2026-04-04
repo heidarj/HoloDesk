@@ -47,10 +47,7 @@ impl AppleJwksProvider {
         Err(AuthError::KeyNotFound(kid.to_owned()))
     }
 
-    async fn lookup_cached(
-        &self,
-        kid: &str,
-    ) -> Option<jsonwebtoken::DecodingKey> {
+    async fn lookup_cached(&self, kid: &str) -> Option<jsonwebtoken::DecodingKey> {
         let cache = self.cache.read().await;
         let cached = cache.as_ref()?;
 
@@ -85,10 +82,7 @@ impl AppleJwksProvider {
     }
 }
 
-fn find_key_in_set(
-    jwk_set: &JwkSet,
-    kid: &str,
-) -> Option<jsonwebtoken::DecodingKey> {
+fn find_key_in_set(jwk_set: &JwkSet, kid: &str) -> Option<jsonwebtoken::DecodingKey> {
     for jwk in &jwk_set.keys {
         if jwk.common.key_id.as_deref() == Some(kid) {
             match jsonwebtoken::DecodingKey::from_jwk(jwk) {

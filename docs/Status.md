@@ -4,9 +4,9 @@
 
 ## Current Milestone
 
-**Milestone 2 – Sign in with Apple + Host Authorization** In Progress
+**Milestone 4 – Display Enumeration + DXGI Capture**
 
-The host-side Apple JWT validator and the client-side auth handshake are implemented. The client can now switch between local test JWTs and the real Sign in with Apple flow from the visionOS app, and the host default `aud` now matches the checked-in bundle ID. The remaining Milestone 2 gap is a live Apple-issued token run on simulator/device all the way through Apple JWKS validation and first-user authorization.
+Milestone 3 is complete. The host now creates logical stream sessions after auth, issues 60-minute resume tokens proactively, holds sessions on unexpected disconnect, and resumes them on a later QUIC connection. The visionOS client stores the current session token in memory, attempts one automatic resume on unexpected transport loss, and retries resume before full auth on the next user-triggered connect. Manual end-to-end validation has now succeeded for both Apple identity-token auth and session resume on real hardware.
 
 ---
 
@@ -16,17 +16,19 @@ The host-side Apple JWT validator and the client-side auth handshake are impleme
 |---|---|---|
 | 0 | Repo scaffolding, documentation, and agent setup | ✅ |
 | 1 | QUIC transport skeleton | ✅ |
+| 2 | Sign in with Apple + host authorization | ✅ |
+| 3 | Stream lifecycle + resume token | ✅ |
 
 ---
 
 ## Latest Changes
 
-- `client-avp/HoloBridge/HoloBridge/Auth/AuthService.swift` now uses a presentation anchor and a real `ASAuthorizationController` flow so the app can request an Apple identity token instead of only using locally-signed test JWTs.
-- `client-avp/HoloBridge/HoloBridge/Session/SessionManager.swift` now supports runtime auth-mode selection (`apple` vs `test`) instead of hard-wiring test auth in debug builds.
-- `client-avp/HoloBridge/HoloBridge/ContentView.swift` exposes the auth mode in debug builds and labels the Apple path as `Sign In and Connect`.
-- `host/auth/src/config.rs` now defaults the expected Apple `aud` to the checked-in bundle ID `cloud.hr5.HoloBridge`, which matches the visionOS project.
-- `host/transport/src/bin/auth_smoke_client.rs` now uses the same bundle ID default so the local test-token flow still aligns with host validation.
-- `client-avp/HoloBridge/HoloBridge.xcodeproj/project.pbxproj` now includes the missing local Swift package reference for `Packages/RealityKitContent`, which was required to make `xcodebuild` resolve and build the project from this workspace.
+- Added `host/session/` as a new workspace crate with in-memory `SessionManager`, explicit `Active/Held/Terminated` session states, reconnect counters, 60-minute hold windows, and one-time resume-token rotation.
+- Added `host/auth/src/resume_token.rs` plus new `AuthConfig` settings for `HOLOBRIDGE_AUTH_RESUME_TOKEN_TTL` and `HOLOBRIDGE_AUTH_RESUME_TOKEN_SECRET`. Resume tokens are now HMAC-SHA256 signed opaque payloads carrying `session_id`, `expires_at_unix_secs`, and a nonce.
+- Extended the Rust control protocol with `resume_session` and `resume_result`, and extended successful `auth_result` payloads with `session_id`, `resume_token`, and `resume_token_ttl_secs`.
+- Refactored `host/transport` into a long-running listener that survives reconnects, creates sessions on auth success, holds them on unexpected disconnect, resumes them with a valid token, and terminates them on orderly shutdown.
+- Updated the visionOS transport/session client so it stores the current session ID and resume token in memory, adds a `resuming` state, performs one automatic resume attempt on unexpected disconnect, and retries resume before full auth on the next manual `Connect`.
+- Added a debug-only `Simulate Network Drop` button in the connected AVP UI so manual end-to-end reconnect validation can force an abrupt QUIC disconnect without sending `goodbye`.
 
 ---
 
@@ -52,33 +54,41 @@ The host-side Apple JWT validator and the client-side auth handshake are impleme
 
 ### Milestone 2
 
-- [x] Host auth tests pass: `cargo test` reports 10/10 passing tests (6 auth + 4 transport codec).
+- [x] Host auth tests pass, including real Apple-issued token validation in manual end-to-end testing.
 - [x] visionOS app builds successfully with `xcodebuild -project client-avp/HoloBridge/HoloBridge.xcodeproj -scheme HoloBridge -destination 'generic/platform=visionOS Simulator'`.
 - [x] The client can select the real Apple auth path at runtime in debug builds instead of being locked to local test tokens.
 - [x] The host default audience now matches the checked-in visionOS bundle identifier.
-- [ ] Live Apple Sign in with Apple on simulator/device has not yet been exercised in this workspace.
-- [ ] Live Apple identity token transmission to the host and Apple JWKS validation have not yet been exercised in this workspace.
+- [x] Live Apple Sign in with Apple on simulator/device HAS been exercised in this workspace.
+- [x] Live Apple identity token transmission to the host and Apple JWKS validation HAVE been exercised in this workspace.
+
+### Milestone 3
+
+- [x] `cargo test` now passes all 24 tests across the host workspace (9 auth + 6 session + 3 transport loopback + 6 codec).
+- [x] Host sessions are created on successful auth and include proactive 60-minute resume tokens.
+- [x] Loopback QUIC tests cover auth -> abrupt disconnect -> resume success.
+- [x] Loopback QUIC tests cover resume-token reuse rejection and expired-token rejection.
+- [x] The visionOS app still builds successfully with `xcodebuild -project client-avp/HoloBridge/HoloBridge.xcodeproj -scheme HoloBridge -destination 'generic/platform=visionOS Simulator'`.
+- [x] Manual end-to-end Apple auth validation succeeded on a real Apple Vision Pro.
+- [x] Manual end-to-end session resume validation succeeded on a real Apple Vision Pro; the server logs confirmed `resume_session` handling and `reconnect_count=1`.
 
 ---
 
 ## Known Limitations
 
-- The real Apple auth path still needs a signed-in Apple simulator/device run to confirm `identityToken` issuance end-to-end.
 - Authorization is still effectively first-user bootstrap by default; there is no explicit admin flow yet for reviewing or pre-registering Apple `sub` values.
-- The visionOS transport client still has pre-existing concurrency/deprecation warnings in `NetworkFrameworkQuicClient.swift`; they do not block Milestone 2 auth validation but should be cleaned up before tightening Swift 6 checks.
+- Resume state is memory-only on both sides in Milestone 3. If the host process or the app restarts, the user must authenticate again.
+- The visionOS transport client still has pre-existing concurrency/deprecation warnings in `NetworkFrameworkQuicClient.swift`; they do not block Milestone 3 validation but should be cleaned up before tightening Swift 6 checks.
 
 ---
 
 ## Next Recommended Step
 
-1. Run the app in `Apple` auth mode on a signed-in visionOS simulator or device.
-2. Start the host with `HOLOBRIDGE_AUTH_TEST_MODE=0` and `HOLOBRIDGE_AUTH_BUNDLE_ID=cloud.hr5.HoloBridge` (or your actual bundle ID if you change the project).
-3. Verify `Hello -> HelloAck -> Authenticate -> AuthResult success` using a real Apple identity token.
-4. Capture the first real Apple `sub` in `host/authorized_users.json`, then decide whether to keep bootstrap enabled or move to explicit authorization for subsequent users.
+1. Start Milestone 4 by scaffolding `host/capture/` as a Rust crate in the host workspace.
+2. Implement display enumeration for the primary DXGI path and define the `ICaptureBackend`-style interface boundary for future backends.
+3. Add a minimal validation path that enumerates displays and proves frame acquisition can be opened for the target display.
 
 ---
 
 ## Blockers
 
-- No code blocker is currently known for the Milestone 2 auth slice.
-- Full Milestone 2 completion still depends on live Apple account/device state and Apple network reachability during runtime testing.
+- No code blocker is currently known for Milestone 4 planning or scaffolding.

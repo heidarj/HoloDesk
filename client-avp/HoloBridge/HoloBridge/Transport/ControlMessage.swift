@@ -5,7 +5,9 @@ public enum ControlMessageType: String, Codable, Sendable {
     case helloAck = "hello_ack"
     case goodbye
     case authenticate
+    case resumeSession = "resume_session"
     case authResult = "auth_result"
+    case resumeResult = "resume_result"
 }
 
 public enum ControlMessageCodecError: Error, LocalizedError, Sendable, Equatable {
@@ -43,8 +45,11 @@ public struct ControlMessage: Codable, Sendable, Equatable {
     public let message: String?
     public let reason: String?
     public let identityToken: String?
+    public let resumeToken: String?
     public let success: Bool?
     public let userDisplayName: String?
+    public let sessionID: String?
+    public let resumeTokenTTLSeconds: UInt64?
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -54,8 +59,11 @@ public struct ControlMessage: Codable, Sendable, Equatable {
         case message
         case reason
         case identityToken = "identity_token"
+        case resumeToken = "resume_token"
         case success
         case userDisplayName = "user_display_name"
+        case sessionID = "session_id"
+        case resumeTokenTTLSeconds = "resume_token_ttl_secs"
     }
 
     public init(
@@ -66,8 +74,11 @@ public struct ControlMessage: Codable, Sendable, Equatable {
         message: String? = nil,
         reason: String? = nil,
         identityToken: String? = nil,
+        resumeToken: String? = nil,
         success: Bool? = nil,
-        userDisplayName: String? = nil
+        userDisplayName: String? = nil,
+        sessionID: String? = nil,
+        resumeTokenTTLSeconds: UInt64? = nil
     ) {
         self.type = type
         self.protocolVersion = protocolVersion
@@ -76,8 +87,11 @@ public struct ControlMessage: Codable, Sendable, Equatable {
         self.message = message
         self.reason = reason
         self.identityToken = identityToken
+        self.resumeToken = resumeToken
         self.success = success
         self.userDisplayName = userDisplayName
+        self.sessionID = sessionID
+        self.resumeTokenTTLSeconds = resumeTokenTTLSeconds
     }
 
     public static func hello(
@@ -104,12 +118,46 @@ public struct ControlMessage: Codable, Sendable, Equatable {
         ControlMessage(type: .authenticate, identityToken: identityToken)
     }
 
+    public static func resumeSession(resumeToken: String) -> ControlMessage {
+        ControlMessage(type: .resumeSession, resumeToken: resumeToken)
+    }
+
     public static func authResult(
         success: Bool,
         message: String,
-        userDisplayName: String? = nil
+        userDisplayName: String? = nil,
+        sessionID: String? = nil,
+        resumeToken: String? = nil,
+        resumeTokenTTLSeconds: UInt64? = nil
     ) -> ControlMessage {
-        ControlMessage(type: .authResult, message: message, success: success, userDisplayName: userDisplayName)
+        ControlMessage(
+            type: .authResult,
+            message: message,
+            resumeToken: resumeToken,
+            success: success,
+            userDisplayName: userDisplayName,
+            sessionID: sessionID,
+            resumeTokenTTLSeconds: resumeTokenTTLSeconds
+        )
+    }
+
+    public static func resumeResult(
+        success: Bool,
+        message: String,
+        userDisplayName: String? = nil,
+        sessionID: String? = nil,
+        resumeToken: String? = nil,
+        resumeTokenTTLSeconds: UInt64? = nil
+    ) -> ControlMessage {
+        ControlMessage(
+            type: .resumeResult,
+            message: message,
+            resumeToken: resumeToken,
+            success: success,
+            userDisplayName: userDisplayName,
+            sessionID: sessionID,
+            resumeTokenTTLSeconds: resumeTokenTTLSeconds
+        )
     }
 
     public var kind: String {

@@ -27,7 +27,7 @@ HoloBridge v1 uses a three-part auth model:
 
 1. **Sign in with Apple** – The AVP client uses `ASAuthorizationAppleIDProvider` to sign in. The resulting Apple identity token (a short-lived JWT) is sent to the host at session creation.
 2. **QUIC session as the active auth context** – After the host validates the identity token, the QUIC connection itself is the authorized session context. No per-packet tokens or headers.
-3. **Stream-specific resume token** – If the QUIC session is interrupted, the host issues a short-lived (e.g., 60-second), stream-scoped resume token. The client uses this token only to resume that one stream.
+3. **Stream-specific resume token** – If the QUIC session is interrupted, the host issues a short-lived (e.g., 60-minute), stream-scoped resume token. The client uses this token only to resume that one stream.
 
 ---
 
@@ -70,7 +70,7 @@ HoloBridge v1 uses a three-part auth model:
 - Network interruptions (Wi-Fi handoff, brief outages) are common. Requiring full re-authentication (Sign in with Apple) after a brief interruption would be a poor user experience.
 - A resume token allows the client to reconnect quickly without re-presenting the Apple identity token.
 - Scoping the token to a single stream prevents it from being used to start new streams or access other resources.
-- Short lifetime (e.g., 60 seconds) limits the window of exposure if the token is leaked.
+- Short lifetime (e.g., 60 minutes) limits the window of exposure if the token is leaked.
 - Invalidating the token after first successful use prevents replay attacks.
 
 ### Optional: App Attest

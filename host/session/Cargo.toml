@@ -1,0 +1,16 @@
+[package]
+name = "holobridge-session"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+
+[lib]
+name = "holobridge_session"
+path = "src/lib.rs"
+
+[dependencies]
+base64 = "0.22"
+holobridge-auth = { path = "../auth" }
+rand = "0.8"
+tokio = { version = "1", features = ["sync"] }
+

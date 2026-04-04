@@ -7,8 +7,7 @@ use serde::Serialize;
 /// Generate an RSA key pair for test mode and return (private PEM bytes, public PEM bytes).
 pub fn generate_test_rsa_keypair() -> (Vec<u8>, Vec<u8>) {
     let mut rng = rand::thread_rng();
-    let private_key =
-        RsaPrivateKey::new(&mut rng, 2048).expect("RSA key generation failed");
+    let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("RSA key generation failed");
 
     let private_pem = private_key
         .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
@@ -23,12 +22,7 @@ pub fn generate_test_rsa_keypair() -> (Vec<u8>, Vec<u8>) {
 }
 
 /// Create a signed JWT for testing.
-pub fn create_test_jwt(
-    private_key_pem: &[u8],
-    sub: &str,
-    aud: &str,
-    expired: bool,
-) -> String {
+pub fn create_test_jwt(private_key_pem: &[u8], sub: &str, aud: &str, expired: bool) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -44,8 +38,7 @@ pub fn create_test_jwt(
         email_verified: Some(true),
     };
 
-    let key =
-        EncodingKey::from_rsa_pem(private_key_pem).expect("encoding key from test PEM");
+    let key = EncodingKey::from_rsa_pem(private_key_pem).expect("encoding key from test PEM");
 
     let mut header = Header::new(jsonwebtoken::Algorithm::RS256);
     header.kid = Some("test-key-1".to_owned());

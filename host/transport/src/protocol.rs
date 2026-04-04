@@ -28,11 +28,33 @@ pub enum ControlMessage {
         #[serde(rename = "identity_token")]
         identity_token: String,
     },
+    ResumeSession {
+        #[serde(rename = "resume_token")]
+        resume_token: String,
+    },
     AuthResult {
         success: bool,
         message: String,
         #[serde(rename = "user_display_name")]
         user_display_name: Option<String>,
+        #[serde(rename = "session_id")]
+        session_id: Option<String>,
+        #[serde(rename = "resume_token")]
+        resume_token: Option<String>,
+        #[serde(rename = "resume_token_ttl_secs")]
+        resume_token_ttl_secs: Option<u64>,
+    },
+    ResumeResult {
+        success: bool,
+        message: String,
+        #[serde(rename = "user_display_name")]
+        user_display_name: Option<String>,
+        #[serde(rename = "session_id")]
+        session_id: Option<String>,
+        #[serde(rename = "resume_token")]
+        resume_token: Option<String>,
+        #[serde(rename = "resume_token_ttl_secs")]
+        resume_token_ttl_secs: Option<u64>,
     },
 }
 
@@ -62,7 +84,10 @@ impl ControlMessage {
     }
 
     pub fn hello_smoke() -> Self {
-        Self::hello("transport-smoke", vec![CONTROL_STREAM_CAPABILITY.to_owned()])
+        Self::hello(
+            "transport-smoke",
+            vec![CONTROL_STREAM_CAPABILITY.to_owned()],
+        )
     }
 
     pub fn hello_ack(message: impl Into<String>) -> Self {
@@ -84,15 +109,45 @@ impl ControlMessage {
         }
     }
 
+    pub fn resume_session(resume_token: impl Into<String>) -> Self {
+        Self::ResumeSession {
+            resume_token: resume_token.into(),
+        }
+    }
+
     pub fn auth_result(
         success: bool,
         message: impl Into<String>,
         user_display_name: Option<String>,
+        session_id: Option<String>,
+        resume_token: Option<String>,
+        resume_token_ttl_secs: Option<u64>,
     ) -> Self {
         Self::AuthResult {
             success,
             message: message.into(),
             user_display_name,
+            session_id,
+            resume_token,
+            resume_token_ttl_secs,
+        }
+    }
+
+    pub fn resume_result(
+        success: bool,
+        message: impl Into<String>,
+        user_display_name: Option<String>,
+        session_id: Option<String>,
+        resume_token: Option<String>,
+        resume_token_ttl_secs: Option<u64>,
+    ) -> Self {
+        Self::ResumeResult {
+            success,
+            message: message.into(),
+            user_display_name,
+            session_id,
+            resume_token,
+            resume_token_ttl_secs,
         }
     }
 
@@ -102,16 +157,25 @@ impl ControlMessage {
             Self::HelloAck { .. } => "hello_ack",
             Self::Goodbye { .. } => "goodbye",
             Self::Authenticate { .. } => "authenticate",
+            Self::ResumeSession { .. } => "resume_session",
             Self::AuthResult { .. } => "auth_result",
+            Self::ResumeResult { .. } => "resume_result",
         }
     }
 
     pub fn protocol_version(&self) -> Option<u32> {
         match self {
-            Self::Hello { protocol_version, .. } | Self::HelloAck { protocol_version, .. } => {
-                Some(*protocol_version)
+            Self::Hello {
+                protocol_version, ..
             }
-            Self::Goodbye { .. } | Self::Authenticate { .. } | Self::AuthResult { .. } => None,
+            | Self::HelloAck {
+                protocol_version, ..
+            } => Some(*protocol_version),
+            Self::Goodbye { .. }
+            | Self::Authenticate { .. }
+            | Self::ResumeSession { .. }
+            | Self::AuthResult { .. }
+            | Self::ResumeResult { .. } => None,
         }
     }
 }
@@ -120,10 +184,13 @@ impl ControlMessageCodec {
     pub fn encode(message: &ControlMessage) -> Result<Vec<u8>, ProtocolError> {
         let payload = serde_json::to_vec(message)
             .map_err(|error| ProtocolError::InvalidJson(error.to_string()))?;
-        let payload_len: u32 = payload
-            .len()
-            .try_into()
-            .map_err(|_| ProtocolError::FrameTooLarge { actual: payload.len() })?;
+        let payload_len: u32 =
+            payload
+                .len()
+                .try_into()
+                .map_err(|_| ProtocolError::FrameTooLarge {
+                    actual: payload.len(),
+                })?;
 
         let mut encoded = Vec::with_capacity(4 + payload.len());
         encoded.extend_from_slice(&payload_len.to_be_bytes());
@@ -133,7 +200,9 @@ impl ControlMessageCodec {
 
     pub fn decode_frame(frame: &[u8]) -> Result<ControlMessage, ProtocolError> {
         if frame.len() < 4 {
-            return Err(ProtocolError::FrameTooShort { actual: frame.len() });
+            return Err(ProtocolError::FrameTooShort {
+                actual: frame.len(),
+            });
         }
 
         let declared = u32::from_be_bytes(frame[0..4].try_into().expect("length prefix")) as usize;
@@ -193,13 +262,22 @@ impl fmt::Display for ProtocolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::FrameTooShort { actual } => {
-                write!(formatter, "frame shorter than 4-byte prefix: {actual} bytes")
+                write!(
+                    formatter,
+                    "frame shorter than 4-byte prefix: {actual} bytes"
+                )
             }
             Self::FrameTooLarge { actual } => {
-                write!(formatter, "frame payload too large to encode: {actual} bytes")
+                write!(
+                    formatter,
+                    "frame payload too large to encode: {actual} bytes"
+                )
             }
             Self::LengthMismatch { declared, actual } => {
-                write!(formatter, "frame length mismatch: declared {declared}, actual {actual}")
+                write!(
+                    formatter,
+                    "frame length mismatch: declared {declared}, actual {actual}"
+                )
             }
             Self::InvalidJson(error) => write!(formatter, "invalid control message json: {error}"),
             Self::UnsupportedProtocolVersion { actual } => {

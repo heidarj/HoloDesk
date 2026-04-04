@@ -1,6 +1,6 @@
 use holobridge_transport::{
-    protocol::{ProtocolError, CONTROL_STREAM_CAPABILITY}, ControlMessage, ControlMessageCodec,
-    FrameAccumulator, PROTOCOL_VERSION,
+    protocol::{ProtocolError, CONTROL_STREAM_CAPABILITY},
+    ControlMessage, ControlMessageCodec, FrameAccumulator, PROTOCOL_VERSION,
 };
 
 #[test]
@@ -23,6 +23,41 @@ fn hello_ack_roundtrip_preserves_protocol_version() {
 
     assert_eq!(decoded.protocol_version(), Some(PROTOCOL_VERSION));
     assert_eq!(decoded, message);
+}
+
+#[test]
+fn auth_result_roundtrip_preserves_session_payload() {
+    let message = ControlMessage::auth_result(
+        true,
+        "authenticated",
+        Some("user@example.com".to_owned()),
+        Some("session-123".to_owned()),
+        Some("resume-token-123".to_owned()),
+        Some(3600),
+    );
+    let encoded = ControlMessageCodec::encode(&message).expect("encode auth result");
+    let decoded = ControlMessageCodec::decode_frame(&encoded).expect("decode auth result");
+
+    assert_eq!(decoded, message);
+}
+
+#[test]
+fn resume_roundtrip_works_in_accumulator() {
+    let resume = ControlMessage::resume_session("resume-token-123");
+    let result = ControlMessage::resume_result(
+        true,
+        "resumed",
+        Some("Test User".to_owned()),
+        Some("session-123".to_owned()),
+        Some("resume-token-456".to_owned()),
+        Some(3600),
+    );
+    let mut accumulator = FrameAccumulator::default();
+    accumulator.push(&ControlMessageCodec::encode(&resume).expect("encode resume"));
+    accumulator.push(&ControlMessageCodec::encode(&result).expect("encode result"));
+
+    let messages = accumulator.drain_messages().expect("decode frames");
+    assert_eq!(messages, vec![resume, result]);
 }
 
 #[test]

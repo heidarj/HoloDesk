@@ -94,8 +94,12 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         try await send(ControlMessage.hello(clientName: clientName, capabilities: capabilities))
     }
 
+    public func receive() async throws -> ControlMessage {
+        try await receiveMessage()
+    }
+
     public func awaitHelloAck() async throws -> ControlMessage {
-        let message = try await receiveMessage()
+        let message = try await receive()
         guard message.type == .helloAck else {
             throw TransportClientError.unexpectedMessage(message.kind)
         }
@@ -103,8 +107,16 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
     }
 
     public func awaitAuthResult() async throws -> ControlMessage {
-        let message = try await receiveMessage()
+        let message = try await receive()
         guard message.type == .authResult else {
+            throw TransportClientError.unexpectedMessage(message.kind)
+        }
+        return message
+    }
+
+    public func awaitResumeResult() async throws -> ControlMessage {
+        let message = try await receive()
+        guard message.type == .resumeResult else {
             throw TransportClientError.unexpectedMessage(message.kind)
         }
         return message

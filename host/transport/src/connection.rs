@@ -26,6 +26,11 @@ pub enum ConnectionError {
     Protocol(ProtocolError),
     DuplicateHello,
     DuplicateHelloAck,
+    DuplicateAuthenticate,
+    DuplicateResumeSession,
+    DuplicateAuthResult,
+    DuplicateResumeResult,
+    ConflictingHandshakeMessage,
     UnexpectedMessage {
         role: ConnectionRole,
         message_type: &'static str,
@@ -33,14 +38,16 @@ pub enum ConnectionError {
     AuthNotComplete,
 }
 
-/// Result of auth processing, returned to the caller to drive async validation.
+/// Result of handshake processing, returned to the caller to drive async validation.
 #[derive(Debug, Clone)]
-pub enum AuthAction {
+pub enum HandshakeAction {
     /// The server received an Authenticate message; the caller should validate the token
     /// and then call `record_auth_result()`.
     ValidateToken(String),
+    /// The server received a ResumeSession message; the caller should validate the token
+    /// and then call `record_resume_result()`.
+    ValidateResumeToken(String),
 }
-
 
 #[derive(Debug, Clone)]
 pub struct ControlConnection {
@@ -51,8 +58,11 @@ pub struct ControlConnection {
     goodbye_sent: bool,
     goodbye_received: bool,
     auth_received: bool,
+    resume_received: bool,
     auth_result_sent: bool,
     auth_result_received: bool,
+    resume_result_sent: bool,
+    resume_result_received: bool,
     auth_success: Option<bool>,
 }
 
@@ -69,8 +79,11 @@ impl ControlConnection {
             goodbye_sent: false,
             goodbye_received: false,
             auth_received: false,
+            resume_received: false,
             auth_result_sent: false,
             auth_result_received: false,
+            resume_result_sent: false,
+            resume_result_received: false,
             auth_success: None,
         }
     }
@@ -82,7 +95,7 @@ impl ControlConnection {
     pub fn on_receive(
         &mut self,
         message: ControlMessage,
-    ) -> Result<(Vec<ControlMessage>, Option<AuthAction>), ConnectionError> {
+    ) -> Result<(Vec<ControlMessage>, Option<HandshakeAction>), ConnectionError> {
         self.transcript.received.push(message.clone());
         match self.role {
             ConnectionRole::Server => self.on_receive_as_server(message),
@@ -97,20 +110,64 @@ impl ControlConnection {
         success: bool,
         message: impl Into<String>,
         user_display_name: Option<String>,
+        session_id: Option<String>,
+        resume_token: Option<String>,
+        resume_token_ttl_secs: Option<u64>,
     ) -> ControlMessage {
         self.auth_success = Some(success);
         self.auth_result_sent = true;
-        let msg = ControlMessage::auth_result(success, message, user_display_name);
+        let msg = ControlMessage::auth_result(
+            success,
+            message,
+            user_display_name,
+            session_id,
+            resume_token,
+            resume_token_ttl_secs,
+        );
         self.transcript.sent.push(msg.clone());
         msg
     }
 
-    pub fn auth_complete(&self) -> bool {
+    pub fn record_resume_result(
+        &mut self,
+        success: bool,
+        message: impl Into<String>,
+        user_display_name: Option<String>,
+        session_id: Option<String>,
+        resume_token: Option<String>,
+        resume_token_ttl_secs: Option<u64>,
+    ) -> ControlMessage {
+        self.auth_success = Some(success);
+        self.resume_result_sent = true;
+        let msg = ControlMessage::resume_result(
+            success,
+            message,
+            user_display_name,
+            session_id,
+            resume_token,
+            resume_token_ttl_secs,
+        );
+        self.transcript.sent.push(msg.clone());
+        msg
+    }
+
+    pub fn session_established(&self) -> bool {
         match self.role {
-            ConnectionRole::Server => self.auth_result_sent && self.auth_success == Some(true),
-            ConnectionRole::Client => {
-                self.auth_result_received && self.auth_success == Some(true)
+            ConnectionRole::Server => {
+                (self.auth_result_sent || self.resume_result_sent)
+                    && self.auth_success == Some(true)
             }
+            ConnectionRole::Client => {
+                (self.auth_result_received || self.resume_result_received)
+                    && self.auth_success == Some(true)
+            }
+        }
+    }
+
+    pub fn handshake_finished(&self) -> bool {
+        match self.role {
+            ConnectionRole::Server => self.auth_result_sent || self.resume_result_sent,
+            ConnectionRole::Client => self.auth_result_received || self.resume_result_received,
         }
     }
 
@@ -142,7 +199,7 @@ impl ControlConnection {
 
     /// Returns true when the full handshake (Hello + Auth) is complete.
     pub fn handshake_complete(&self) -> bool {
-        self.hello_exchanged() && self.auth_complete()
+        self.hello_exchanged() && self.handshake_finished()
     }
 
     pub fn close_initiator(&self) -> CloseInitiator {
@@ -166,7 +223,7 @@ impl ControlConnection {
     fn on_receive_as_server(
         &mut self,
         message: ControlMessage,
-    ) -> Result<(Vec<ControlMessage>, Option<AuthAction>), ConnectionError> {
+    ) -> Result<(Vec<ControlMessage>, Option<HandshakeAction>), ConnectionError> {
         match message {
             ControlMessage::Hello { .. } => {
                 if self.hello_received {
@@ -188,12 +245,44 @@ impl ControlConnection {
                         message_type: "authenticate (before hello)",
                     });
                 }
+                if self.resume_received {
+                    return Err(ConnectionError::ConflictingHandshakeMessage);
+                }
+                if self.auth_received {
+                    return Err(ConnectionError::DuplicateAuthenticate);
+                }
                 self.auth_received = true;
-                Ok((Vec::new(), Some(AuthAction::ValidateToken(identity_token))))
+                Ok((
+                    Vec::new(),
+                    Some(HandshakeAction::ValidateToken(identity_token)),
+                ))
+            }
+            ControlMessage::ResumeSession { resume_token } => {
+                if !self.hello_received {
+                    return Err(ConnectionError::UnexpectedMessage {
+                        role: self.role,
+                        message_type: "resume_session (before hello)",
+                    });
+                }
+                if self.auth_received {
+                    return Err(ConnectionError::ConflictingHandshakeMessage);
+                }
+                if self.resume_received {
+                    return Err(ConnectionError::DuplicateResumeSession);
+                }
+                self.resume_received = true;
+                Ok((
+                    Vec::new(),
+                    Some(HandshakeAction::ValidateResumeToken(resume_token)),
+                ))
             }
             ControlMessage::AuthResult { .. } => Err(ConnectionError::UnexpectedMessage {
                 role: self.role,
                 message_type: "auth_result",
+            }),
+            ControlMessage::ResumeResult { .. } => Err(ConnectionError::UnexpectedMessage {
+                role: self.role,
+                message_type: "resume_result",
             }),
             ControlMessage::Goodbye { .. } => {
                 self.goodbye_received = true;
@@ -205,7 +294,7 @@ impl ControlConnection {
     fn on_receive_as_client(
         &mut self,
         message: ControlMessage,
-    ) -> Result<(Vec<ControlMessage>, Option<AuthAction>), ConnectionError> {
+    ) -> Result<(Vec<ControlMessage>, Option<HandshakeAction>), ConnectionError> {
         match message {
             ControlMessage::Hello { .. } => Err(ConnectionError::UnexpectedMessage {
                 role: self.role,
@@ -222,8 +311,23 @@ impl ControlConnection {
                 role: self.role,
                 message_type: "authenticate",
             }),
+            ControlMessage::ResumeSession { .. } => Err(ConnectionError::UnexpectedMessage {
+                role: self.role,
+                message_type: "resume_session",
+            }),
             ControlMessage::AuthResult { success, .. } => {
+                if self.auth_result_received {
+                    return Err(ConnectionError::DuplicateAuthResult);
+                }
                 self.auth_result_received = true;
+                self.auth_success = Some(success);
+                Ok((Vec::new(), None))
+            }
+            ControlMessage::ResumeResult { success, .. } => {
+                if self.resume_result_received {
+                    return Err(ConnectionError::DuplicateResumeResult);
+                }
+                self.resume_result_received = true;
                 self.auth_success = Some(success);
                 Ok((Vec::new(), None))
             }
@@ -240,7 +344,39 @@ impl fmt::Display for ConnectionError {
         match self {
             Self::Protocol(error) => write!(formatter, "protocol error: {error}"),
             Self::DuplicateHello => write!(formatter, "duplicate hello received on control stream"),
-            Self::DuplicateHelloAck => write!(formatter, "duplicate hello_ack received on control stream"),
+            Self::DuplicateHelloAck => {
+                write!(formatter, "duplicate hello_ack received on control stream")
+            }
+            Self::DuplicateAuthenticate => {
+                write!(
+                    formatter,
+                    "duplicate authenticate received on control stream"
+                )
+            }
+            Self::DuplicateResumeSession => {
+                write!(
+                    formatter,
+                    "duplicate resume_session received on control stream"
+                )
+            }
+            Self::DuplicateAuthResult => {
+                write!(
+                    formatter,
+                    "duplicate auth_result received on control stream"
+                )
+            }
+            Self::DuplicateResumeResult => {
+                write!(
+                    formatter,
+                    "duplicate resume_result received on control stream"
+                )
+            }
+            Self::ConflictingHandshakeMessage => {
+                write!(
+                    formatter,
+                    "conflicting authenticate/resume handshake messages received"
+                )
+            }
             Self::UnexpectedMessage { role, message_type } => write!(
                 formatter,
                 "unexpected {message_type} for {:?} control stream state",
