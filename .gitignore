@@ -12,6 +12,9 @@ DerivedData/
 *.xcuserstate
 .swiftpm/
 
+# Smoke test output
+*.h264
+
 # Local environment and temporary files
 .idea/
 .vs/
