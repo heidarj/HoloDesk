@@ -1,4 +1,5 @@
 use std::{
+    env,
     mem::ManuallyDrop,
     ptr,
     rc::Rc,
@@ -60,8 +61,9 @@ use windows::{
             MFT_CATEGORY_VIDEO_ENCODER, MFT_OUTPUT_DATA_BUFFER,
             MFT_OUTPUT_STREAM_INFO,
             MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO,
-            MFTEnumEx, MF_VERSION, METransformHaveOutput,
-            METransformNeedInput,
+            MFTEnumEx, MF_VERSION, METransformDrainComplete,
+            METransformHaveOutput, METransformNeedInput,
+            MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS,
             MF_EVENT_FLAG_NO_WAIT, CODECAPI_AVEncCommonMeanBitRate,
             CODECAPI_AVEncCommonRateControlMode,
             CODECAPI_AVEncMPVDefaultBPictureCount,
@@ -195,6 +197,14 @@ impl VideoEncoder for MfH264Encoder {
         }
 
         self.pump_events()?;
+        trace_encoder(format!(
+            "encode start frame={}x{} event_generator={} output_pending={} input_needed={}",
+            metadata.width,
+            metadata.height,
+            self.event_generator.is_some(),
+            self.output_pending,
+            self.input_needed,
+        ));
 
         let nv12_texture = self.color_converter.convert(frame.texture())?;
         let sample = create_input_sample(
@@ -210,11 +220,14 @@ impl VideoEncoder for MfH264Encoder {
         loop {
             match unsafe { self.transform.ProcessInput(INPUT_STREAM_ID, &sample, 0) } {
                 Ok(()) => {
+                    trace_encoder("ProcessInput -> ok");
                     self.input_needed = false;
                     break;
                 }
                 Err(error) if error.code() == MF_E_NOTACCEPTING => {
-                    let drained = self.drain_available_output()?;
+                    trace_encoder("ProcessInput -> MF_E_NOTACCEPTING; waiting for output");
+                    self.wait_for_output_event()?;
+                    let drained = self.drain_available_output(false)?;
                     if drained.is_empty() {
                         return Err(map_windows_error(
                             "IMFTransform::ProcessInput",
@@ -222,9 +235,13 @@ impl VideoEncoder for MfH264Encoder {
                         ));
                     }
                     encoded.extend(drained);
-                    self.pump_events()?;
                 }
                 Err(error) => {
+                    trace_encoder(format!(
+                        "ProcessInput -> error 0x{:08x}: {}",
+                        error.code().0 as u32,
+                        error.message()
+                    ));
                     return Err(map_windows_error(
                         "IMFTransform::ProcessInput",
                         error,
@@ -233,7 +250,7 @@ impl VideoEncoder for MfH264Encoder {
             }
         }
 
-        encoded.extend(self.drain_available_output()?);
+        encoded.extend(self.drain_available_output(false)?);
         Ok(encoded)
     }
 
@@ -246,8 +263,12 @@ impl VideoEncoder for MfH264Encoder {
                 .ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0)
                 .map_err(|error| map_windows_error("IMFTransform::ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN)", error))?;
         }
-        self.output_pending = true;
-        self.drain_available_output()
+
+        if self.event_generator.is_some() {
+            self.flush_async()
+        } else {
+            self.flush_sync()
+        }
     }
 }
 
@@ -265,6 +286,7 @@ impl MfH264Encoder {
     fn pump_events(&mut self) -> Result<(), EncodeError> {
         let Some(event_generator) = &self.event_generator else {
             self.input_needed = true;
+            trace_encoder("pump_events: no event generator");
             return Ok(());
         };
 
@@ -273,6 +295,11 @@ impl MfH264Encoder {
                 Ok(event) => event,
                 Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => break,
                 Err(error) => {
+                    trace_encoder(format!(
+                        "GetEvent -> error 0x{:08x}: {}",
+                        error.code().0 as u32,
+                        error.message()
+                    ));
                     return Err(map_windows_error(
                         "IMFMediaEventGenerator::GetEvent",
                         error,
@@ -288,26 +315,132 @@ impl MfH264Encoder {
 
             if event_type == METransformNeedInput.0 as u32 {
                 self.input_needed = true;
+                trace_encoder("event: METransformNeedInput");
             } else if event_type == METransformHaveOutput.0 as u32 {
                 self.output_pending = true;
+                trace_encoder("event: METransformHaveOutput");
+            } else {
+                trace_encoder(format!("event: type={event_type}"));
             }
         }
 
         Ok(())
     }
 
+    /// Block until `METransformHaveOutput` is received from the async MFT.
+    /// For sync MFTs (no event generator) or when output is already pending,
+    /// returns immediately.
+    fn wait_for_output_event(&mut self) -> Result<(), EncodeError> {
+        let Some(event_generator) = &self.event_generator else {
+            return Ok(());
+        };
+        if self.output_pending {
+            return Ok(());
+        }
+
+        loop {
+            let event = unsafe {
+                event_generator
+                    .GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0))
+                    .map_err(|error| map_windows_error("IMFMediaEventGenerator::GetEvent(blocking)", error))?
+            };
+            let event_type = unsafe {
+                event
+                    .GetType()
+                    .map_err(|error| map_windows_error("IMFMediaEvent::GetType", error))?
+            };
+
+            if event_type == METransformHaveOutput.0 as u32 {
+                self.output_pending = true;
+                trace_encoder("wait_for_output_event: METransformHaveOutput");
+                return Ok(());
+            } else if event_type == METransformNeedInput.0 as u32 {
+                self.input_needed = true;
+                trace_encoder("wait_for_output_event: METransformNeedInput");
+            } else {
+                trace_encoder(format!("wait_for_output_event: type={event_type}"));
+            }
+        }
+    }
+
+    fn flush_async(&mut self) -> Result<Vec<EncodedAccessUnit>, EncodeError> {
+        let mut encoded = Vec::new();
+
+        loop {
+            let event_type = {
+                let event_generator = self.event_generator.as_ref().unwrap();
+                let event = match unsafe { event_generator.GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0)) } {
+                    Ok(event) => event,
+                    Err(error) => {
+                        trace_encoder(format!(
+                            "flush_async: GetEvent error 0x{:08x}: {}",
+                            error.code().0 as u32,
+                            error.message()
+                        ));
+                        break;
+                    }
+                };
+                unsafe {
+                    event
+                        .GetType()
+                        .map_err(|error| map_windows_error("IMFMediaEvent::GetType", error))?
+                }
+            };
+
+            if event_type == METransformHaveOutput.0 as u32 {
+                trace_encoder("flush_async: METransformHaveOutput");
+                self.output_pending = true;
+                if let Some(access_unit) = self.process_output_once()? {
+                    encoded.push(access_unit);
+                }
+                self.output_pending = false;
+            } else if event_type == METransformDrainComplete.0 as u32 {
+                trace_encoder("flush_async: METransformDrainComplete");
+                break;
+            } else if event_type == METransformNeedInput.0 as u32 {
+                trace_encoder("flush_async: METransformNeedInput (ignored during drain)");
+            } else {
+                trace_encoder(format!("flush_async: event type={event_type}"));
+            }
+        }
+
+        Ok(encoded)
+    }
+
+    fn flush_sync(&mut self) -> Result<Vec<EncodedAccessUnit>, EncodeError> {
+        let mut encoded = Vec::new();
+        loop {
+            match self.process_output_once()? {
+                Some(access_unit) => encoded.push(access_unit),
+                None => break,
+            }
+        }
+        Ok(encoded)
+    }
+
     fn drain_available_output(
         &mut self,
+        _force: bool,
     ) -> Result<Vec<EncodedAccessUnit>, EncodeError> {
         let mut encoded = Vec::new();
         loop {
             self.pump_events()?;
+            if self.event_generator.is_some() && !self.output_pending {
+                trace_encoder("drain_available_output: skipping ProcessOutput without output hint");
+                break;
+            }
             match self.process_output_once()? {
                 Some(access_unit) => {
+                    trace_encoder(format!(
+                        "drain_available_output: emitted sample bytes={} keyframe={}",
+                        access_unit.data.len(),
+                        access_unit.is_keyframe
+                    ));
                     encoded.push(access_unit);
                     self.output_pending = false;
                 }
                 None => {
+                    trace_encoder("drain_available_output: no more output");
                     self.output_pending = false;
                     break;
                 }
@@ -344,13 +477,20 @@ impl MfH264Encoder {
                 &mut output_status,
             )
         } {
-            Ok(()) => {}
+            Ok(()) => {
+                trace_encoder(format!(
+                    "ProcessOutput -> ok status=0x{:08x}",
+                    output_status
+                ));
+            }
             Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => {
                 self.input_needed = true;
+                trace_encoder("ProcessOutput -> MF_E_TRANSFORM_NEED_MORE_INPUT");
                 drop_output_events(&mut output_buffer);
                 return Ok(None);
             }
             Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
+                trace_encoder("ProcessOutput -> MF_E_TRANSFORM_STREAM_CHANGE");
                 drop_output_events(&mut output_buffer);
                 let (nal_length_size, sequence_header_annex_b) =
                     read_sequence_header(&self.transform)?;
@@ -359,6 +499,11 @@ impl MfH264Encoder {
                 return Ok(None);
             }
             Err(error) => {
+                trace_encoder(format!(
+                    "ProcessOutput -> error 0x{:08x}: {}",
+                    error.code().0 as u32,
+                    error.message()
+                ));
                 drop_output_events(&mut output_buffer);
                 return Err(map_windows_error(
                     "IMFTransform::ProcessOutput",
@@ -1003,6 +1148,12 @@ fn map_windows_error(
         operation,
         code: error.code().0,
         message: error.message().to_string(),
+    }
+}
+
+fn trace_encoder(message: impl AsRef<str>) {
+    if env::var_os("HOLOBRIDGE_ENCODE_TRACE").is_some() {
+        eprintln!("[holobridge-encode] {}", message.as_ref());
     }
 }
 

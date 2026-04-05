@@ -10,7 +10,18 @@
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:github.com)",
       "Bash(cargo build:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(HOLOBRIDGE_ENCODE_TRACE=1 cargo test -p holobridge-encode --test windows_hardware short_capture_run -- --ignored --nocapture)",
+      "Bash(HOLOBRIDGE_ENCODE_TRACE=1 cargo test -p holobridge-encode --test windows_hardware -- --ignored --nocapture --test-threads=1)",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"scripts/host-encode-smoke.ps1\")",
+      "Bash(HOLOBRIDGE_ENCODE_TRACE=1 powershell -ExecutionPolicy Bypass -File \"scripts/host-encode-smoke.ps1\")",
+      "Bash(ffprobe -f h264 \"C:/Users/heida/source/HoloDesk/holobridge-smoke.h264\")",
+      "Bash(where ffprobe:*)",
+      "Bash(where ffprobe.exe)",
+      "Bash(ls \"C:/ffmpeg\"*/bin/ffprobe*)",
+      "Read(//c/Program Files/**)",
+      "Bash(xxd -l 32 \"C:/Users/heida/source/HoloDesk/holobridge-smoke.h264\")",
+      "Bash(xxd -l 32 \"C:/Users/heida/source/HoloDesk/host/holobridge-smoke.h264\")"
     ]
   }
 }
