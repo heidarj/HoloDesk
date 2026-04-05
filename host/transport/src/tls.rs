@@ -1,6 +1,6 @@
 use std::{error::Error, fmt, sync::Arc};
 
-use quinn::crypto::rustls::QuicServerConfig;
+use quinn::{crypto::rustls::QuicServerConfig, TransportConfig};
 use rcgen::generate_simple_self_signed;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
@@ -40,7 +40,12 @@ pub fn build_server_config(
     let quic_config = QuicServerConfig::try_from(rustls_config)
         .map_err(|e| TlsConfigError::RustlsConfig(e.to_string()))?;
 
-    Ok(quinn::ServerConfig::with_crypto(Arc::new(quic_config)))
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
+    server_config.transport_config(Arc::new(build_transport_config(
+        config.video.datagram_receive_buffer_size,
+        config.video.datagram_send_buffer_size,
+    )));
+    Ok(server_config)
 }
 
 /// Build a quinn ClientConfig with the appropriate TLS settings.
@@ -63,10 +68,26 @@ pub fn build_client_config(
 
     rustls_config.alpn_protocols = vec![config.alpn.as_bytes().to_vec()];
 
-    Ok(quinn::ClientConfig::new(Arc::new(
+    let mut client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)
             .map_err(|e| TlsConfigError::RustlsConfig(e.to_string()))?,
-    )))
+    ));
+    client_config.transport_config(Arc::new(build_transport_config(
+        config.datagram_receive_buffer_size,
+        config.datagram_send_buffer_size,
+    )));
+    Ok(client_config)
+}
+
+fn build_transport_config(
+    datagram_receive_buffer_size: Option<usize>,
+    datagram_send_buffer_size: usize,
+) -> TransportConfig {
+    let mut transport_config = TransportConfig::default();
+    transport_config
+        .datagram_receive_buffer_size(datagram_receive_buffer_size)
+        .datagram_send_buffer_size(datagram_send_buffer_size);
+    transport_config
 }
 
 /// Certificate verifier that accepts any certificate (localhost development only).

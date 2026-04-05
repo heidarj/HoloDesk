@@ -405,7 +405,10 @@ dependencies = [
 name = "holobridge-transport"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "holobridge-auth",
+ "holobridge-capture",
+ "holobridge-encode",
  "holobridge-session",
  "quinn",
  "rcgen",

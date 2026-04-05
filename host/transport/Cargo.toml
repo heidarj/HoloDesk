@@ -24,9 +24,16 @@ path = "src/bin/auth_smoke_client.rs"
 name = "test_keygen"
 path = "src/bin/test_keygen.rs"
 
+[[bin]]
+name = "video_smoke_client"
+path = "src/bin/video_smoke_client.rs"
+
 [dependencies]
 holobridge-auth = { path = "../auth" }
+holobridge-capture = { path = "../capture" }
+holobridge-encode = { path = "../encode" }
 holobridge-session = { path = "../session" }
+bytes = "1.10.1"
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 rcgen = "0.13"

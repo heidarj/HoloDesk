@@ -13,6 +13,31 @@ pub struct DebugTlsSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoStreamConfig {
+    pub enabled: bool,
+    pub display_id: Option<String>,
+    pub datagram_payload_cap_bytes: usize,
+    pub datagram_receive_buffer_size: Option<usize>,
+    pub datagram_send_buffer_size: usize,
+    pub capture_timeout_ms: u32,
+    pub first_frame_timeout_secs: u64,
+    pub frame_rate_num: u32,
+    pub frame_rate_den: u32,
+    pub bitrate_bps: Option<u32>,
+    #[cfg(test)]
+    pub synthetic_access_units: Option<Vec<SyntheticAccessUnit>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntheticAccessUnit {
+    pub data: Vec<u8>,
+    pub is_keyframe: bool,
+    pub pts_100ns: i64,
+    pub duration_100ns: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportServerConfig {
     pub bind_address: String,
     pub port: u16,
@@ -21,6 +46,7 @@ pub struct TransportServerConfig {
     pub debug_validation: DebugTlsSettings,
     pub server_initiated_close_after_ack: bool,
     pub server_wait_timeout: Option<Duration>,
+    pub video: VideoStreamConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +61,10 @@ pub struct TransportClientConfig {
     pub identity_token: Option<String>,
     /// Resume token to send during resume handshake (for smoke testing).
     pub resume_token: Option<String>,
+    /// Whether the client should advertise media datagram support.
+    pub request_video_stream: bool,
+    pub datagram_receive_buffer_size: Option<usize>,
+    pub datagram_send_buffer_size: usize,
 }
 
 impl Default for CertificateSource {
@@ -53,6 +83,7 @@ impl Default for TransportServerConfig {
             debug_validation: DebugTlsSettings::default(),
             server_initiated_close_after_ack: false,
             server_wait_timeout: None,
+            video: VideoStreamConfig::default(),
         }
     }
 }
@@ -68,6 +99,28 @@ impl Default for TransportClientConfig {
             send_goodbye_after_ack: true,
             identity_token: None,
             resume_token: None,
+            request_video_stream: false,
+            datagram_receive_buffer_size: Some(1024 * 1024),
+            datagram_send_buffer_size: 1024 * 1024,
+        }
+    }
+}
+
+impl Default for VideoStreamConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            display_id: None,
+            datagram_payload_cap_bytes: 1_100,
+            datagram_receive_buffer_size: Some(1024 * 1024),
+            datagram_send_buffer_size: 1024 * 1024,
+            capture_timeout_ms: 16,
+            first_frame_timeout_secs: 2,
+            frame_rate_num: 60,
+            frame_rate_den: 1,
+            bitrate_bps: None,
+            #[cfg(test)]
+            synthetic_access_units: None,
         }
     }
 }
@@ -90,6 +143,7 @@ impl TransportServerConfig {
                 "HOLOBRIDGE_TRANSPORT_SERVER_WAIT_TIMEOUT_SECS",
             )
             .unwrap_or(defaults.server_wait_timeout),
+            video: VideoStreamConfig::from_env(),
         }
     }
 
@@ -114,6 +168,14 @@ impl TransportClientConfig {
                 .unwrap_or(defaults.send_goodbye_after_ack),
             identity_token: env::var("HOLOBRIDGE_AUTH_IDENTITY_TOKEN").ok(),
             resume_token: env::var("HOLOBRIDGE_AUTH_RESUME_TOKEN").ok(),
+            request_video_stream: env_bool("HOLOBRIDGE_VIDEO_REQUEST")
+                .unwrap_or(defaults.request_video_stream),
+            datagram_receive_buffer_size: env_optional_usize(
+                "HOLOBRIDGE_DATAGRAM_RECV_BUFFER_BYTES",
+            )
+            .unwrap_or(defaults.datagram_receive_buffer_size),
+            datagram_send_buffer_size: env_usize("HOLOBRIDGE_DATAGRAM_SEND_BUFFER_BYTES")
+                .unwrap_or(defaults.datagram_send_buffer_size),
         }
     }
 
@@ -129,6 +191,37 @@ impl DebugTlsSettings {
                 "HOLOBRIDGE_TRANSPORT_ALLOW_INSECURE_CERT",
             )
             .unwrap_or(false),
+        }
+    }
+}
+
+impl VideoStreamConfig {
+    pub fn from_env() -> Self {
+        let defaults = Self::default();
+        let (frame_rate_num, frame_rate_den) = env_frame_rate("HOLOBRIDGE_VIDEO_FRAME_RATE")
+            .unwrap_or((defaults.frame_rate_num, defaults.frame_rate_den));
+
+        Self {
+            enabled: env_bool("HOLOBRIDGE_VIDEO_ENABLED").unwrap_or(defaults.enabled),
+            display_id: env::var("HOLOBRIDGE_VIDEO_DISPLAY_ID").ok(),
+            datagram_payload_cap_bytes: env_usize("HOLOBRIDGE_VIDEO_DATAGRAM_PAYLOAD_CAP_BYTES")
+                .unwrap_or(defaults.datagram_payload_cap_bytes),
+            datagram_receive_buffer_size: env_optional_usize(
+                "HOLOBRIDGE_VIDEO_DATAGRAM_RECV_BUFFER_BYTES",
+            )
+            .unwrap_or(defaults.datagram_receive_buffer_size),
+            datagram_send_buffer_size: env_usize("HOLOBRIDGE_VIDEO_DATAGRAM_SEND_BUFFER_BYTES")
+                .unwrap_or(defaults.datagram_send_buffer_size),
+            capture_timeout_ms: env_u32("HOLOBRIDGE_VIDEO_CAPTURE_TIMEOUT_MS")
+                .unwrap_or(defaults.capture_timeout_ms),
+            first_frame_timeout_secs: env_u64("HOLOBRIDGE_VIDEO_FIRST_FRAME_TIMEOUT_SECS")
+                .unwrap_or(defaults.first_frame_timeout_secs),
+            frame_rate_num,
+            frame_rate_den,
+            bitrate_bps: env_u32("HOLOBRIDGE_VIDEO_BITRATE_BPS")
+                .or(defaults.bitrate_bps),
+            #[cfg(test)]
+            synthetic_access_units: None,
         }
     }
 }
@@ -149,6 +242,24 @@ fn env_u16(name: &str) -> Option<u16> {
         .and_then(|value| value.trim().parse::<u16>().ok())
 }
 
+fn env_u32(name: &str) -> Option<u32> {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+}
+
+fn env_u64(name: &str) -> Option<u64> {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
 fn env_optional_duration_secs(name: &str) -> Option<Option<Duration>> {
     env::var(name).ok().and_then(|value| {
         value.trim().parse::<u64>().ok().map(|seconds| {
@@ -159,4 +270,27 @@ fn env_optional_duration_secs(name: &str) -> Option<Option<Duration>> {
             }
         })
     })
+}
+
+fn env_optional_usize(name: &str) -> Option<Option<usize>> {
+    env::var(name).ok().and_then(|value| {
+        value.trim().parse::<usize>().ok().map(|bytes| {
+            if bytes == 0 {
+                None
+            } else {
+                Some(bytes)
+            }
+        })
+    })
+}
+
+fn env_frame_rate(name: &str) -> Option<(u32, u32)> {
+    let value = env::var(name).ok()?;
+    let (num, den) = value.trim().split_once('/')?;
+    let num = num.parse::<u32>().ok()?;
+    let den = den.parse::<u32>().ok()?;
+    if num == 0 || den == 0 {
+        return None;
+    }
+    Some((num, den))
 }

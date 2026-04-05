@@ -1,0 +1,8 @@
+{
+  "authorized_users": [
+    {
+      "sub": "video-smoke-user",
+      "display_name": "video-smoke-user@test.local"
+    }
+  ]
+}

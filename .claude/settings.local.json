@@ -21,7 +21,8 @@
       "Bash(ls \"C:/ffmpeg\"*/bin/ffprobe*)",
       "Read(//c/Program Files/**)",
       "Bash(xxd -l 32 \"C:/Users/heida/source/HoloDesk/holobridge-smoke.h264\")",
-      "Bash(xxd -l 32 \"C:/Users/heida/source/HoloDesk/host/holobridge-smoke.h264\")"
+      "Bash(xxd -l 32 \"C:/Users/heida/source/HoloDesk/host/holobridge-smoke.h264\")",
+      "Bash(xargs wc:*)"
     ]
   }
 }

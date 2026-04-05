@@ -66,16 +66,26 @@ private struct SessionBinding {
     let userDisplayName: String?
 }
 
+private struct PreparedTransport {
+    let client: any TransportClient
+    let generation: Int
+    let videoDatagrams: AsyncThrowingStream<Data, Error>
+}
+
 @Observable
 @MainActor
 public final class SessionManager {
     public var authMode: AuthMode
+    public let videoRenderer: VideoRenderer
     public private(set) var state: SessionState = .disconnected
 
     private let logger = Logger(subsystem: "HoloBridge", category: "Session")
+    private let videoPipeline: VideoStreamPipeline
+
     private var transport: (any TransportClient)?
     private var transportGeneration = 0
     private var monitorTask: Task<Void, Never>?
+    private var videoMonitorTask: Task<Void, Never>?
 
     private var lastHost: String?
     private var lastPort: UInt16?
@@ -86,7 +96,10 @@ public final class SessionManager {
     private var wasUserInitiatedDisconnect = false
 
     public init(authMode: AuthMode? = nil) {
+        let renderer = VideoRenderer()
         self.authMode = authMode ?? Self.defaultAuthMode
+        self.videoRenderer = renderer
+        self.videoPipeline = VideoStreamPipeline(renderer: renderer)
     }
 
     public func connect(host: String, port: UInt16) async {
@@ -137,11 +150,17 @@ public final class SessionManager {
 
         do {
             let authProvider = makeAuthProvider()
-            let (client, generation) = try await openTransport(host: host, port: port)
+            let preparedTransport = try await openTransport(host: host, port: port)
 
-            logger.info("Sending Hello")
-            try await client.sendHello()
-            let ack = try await client.awaitHelloAck()
+            logger.info("Sending Hello with media datagram capability")
+            try await preparedTransport.client.sendHello(
+                clientName: "holobridge-avp",
+                capabilities: [
+                    ControlMessage.controlStreamCapability,
+                    ControlMessage.videoDatagramCapability,
+                ]
+            )
+            let ack = try await preparedTransport.client.awaitHelloAck()
             logger.info("Received HelloAck: \(ack.message ?? "ok", privacy: .public)")
 
             state = .authenticating
@@ -149,19 +168,24 @@ public final class SessionManager {
             let token = try await authProvider.getIdentityToken()
 
             logger.info("Sending Authenticate")
-            try await client.sendAuthenticate(identityToken: token)
+            try await preparedTransport.client.sendAuthenticate(identityToken: token)
 
-            let authResult = try await client.awaitAuthResult()
+            let authResult = try await preparedTransport.client.awaitAuthResult()
             guard authResult.success == true else {
                 let reason = authResult.message ?? "unknown"
                 logger.warning("Auth rejected: \(reason, privacy: .public)")
-                await invalidateTransport(generation: generation, reason: nil)
+                await invalidateTransport(generation: preparedTransport.generation, reason: nil)
                 state = .error("Auth rejected: \(reason)")
                 return
             }
 
             let binding = try sessionBinding(from: authResult, action: "auth")
-            applyConnectedSession(binding, transport: client, generation: generation)
+            applyConnectedSession(
+                binding,
+                transport: preparedTransport.client,
+                videoDatagrams: preparedTransport.videoDatagrams,
+                generation: preparedTransport.generation
+            )
             logger.info("Auth succeeded")
         } catch {
             logger.error("Connection failed: \(error.localizedDescription, privacy: .public)")
@@ -176,24 +200,35 @@ public final class SessionManager {
         }
 
         do {
-            let (client, generation) = try await openTransport(host: host, port: port)
+            let preparedTransport = try await openTransport(host: host, port: port)
 
             logger.info("Sending Hello for resume")
-            try await client.sendHello()
-            _ = try await client.awaitHelloAck()
+            try await preparedTransport.client.sendHello(
+                clientName: "holobridge-avp",
+                capabilities: [
+                    ControlMessage.controlStreamCapability,
+                    ControlMessage.videoDatagramCapability,
+                ]
+            )
+            _ = try await preparedTransport.client.awaitHelloAck()
 
             logger.info("Sending ResumeSession")
-            try await client.sendResumeSession(resumeToken: resumeToken)
-            let resumeResult = try await client.awaitResumeResult()
+            try await preparedTransport.client.sendResumeSession(resumeToken: resumeToken)
+            let resumeResult = try await preparedTransport.client.awaitResumeResult()
 
             guard resumeResult.success == true else {
                 let reason = resumeResult.message ?? "unknown"
-                await invalidateTransport(generation: generation, reason: nil)
+                await invalidateTransport(generation: preparedTransport.generation, reason: nil)
                 return .definitiveFailure("Resume rejected: \(reason)")
             }
 
             let binding = try sessionBinding(from: resumeResult, action: "resume")
-            applyConnectedSession(binding, transport: client, generation: generation)
+            applyConnectedSession(
+                binding,
+                transport: preparedTransport.client,
+                videoDatagrams: preparedTransport.videoDatagrams,
+                generation: preparedTransport.generation
+            )
             logger.info("Session resume succeeded")
             return .success
         } catch {
@@ -205,6 +240,7 @@ public final class SessionManager {
     private func applyConnectedSession(
         _ binding: SessionBinding,
         transport: any TransportClient,
+        videoDatagrams: AsyncThrowingStream<Data, Error>,
         generation: Int
     ) {
         sessionID = binding.sessionID
@@ -214,6 +250,7 @@ public final class SessionManager {
         wasUserInitiatedDisconnect = false
         state = .connected(userDisplayName: binding.userDisplayName)
         startConnectionMonitor(for: transport, generation: generation)
+        startVideoMonitor(videoDatagrams, generation: generation)
     }
 
     private func startConnectionMonitor(
@@ -231,6 +268,38 @@ public final class SessionManager {
                 }
             } catch {
                 await self.handleTransportTermination(error, generation: generation)
+            }
+        }
+    }
+
+    private func startVideoMonitor(
+        _ datagrams: AsyncThrowingStream<Data, Error>,
+        generation: Int
+    ) {
+        videoMonitorTask?.cancel()
+        videoMonitorTask = Task { [weak self] in
+            guard let self else { return }
+
+            await self.videoPipeline.prepareForStream()
+
+            do {
+                for try await datagram in datagrams {
+                    if Task.isCancelled {
+                        return
+                    }
+                    await self.videoPipeline.consume(datagram: datagram)
+                }
+
+                if !Task.isCancelled {
+                    await self.handleVideoTransportTermination(
+                        TransportClientError.connectionClosed,
+                        generation: generation
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await self.handleVideoTransportTermination(error, generation: generation)
             }
         }
     }
@@ -265,6 +334,9 @@ public final class SessionManager {
 
         transport = nil
         monitorTask = nil
+        videoMonitorTask?.cancel()
+        videoMonitorTask = nil
+        await videoPipeline.reset(statusMessage: "Waiting for stream")
 
         if wasUserInitiatedDisconnect {
             return
@@ -291,6 +363,18 @@ public final class SessionManager {
         case .transportFailure(let resumeError):
             state = .error(resumeError.localizedDescription)
         }
+    }
+
+    private func handleVideoTransportTermination(
+        _ error: Error,
+        generation: Int
+    ) async {
+        guard generation == transportGeneration else {
+            return
+        }
+
+        logger.warning("Video datagram receive ended: \(error.localizedDescription, privacy: .public)")
+        videoRenderer.recordRecoverableIssue(error.localizedDescription)
     }
 
     private func sessionBinding(
@@ -335,7 +419,7 @@ public final class SessionManager {
     private func openTransport(
         host: String,
         port: UInt16
-    ) async throws -> (any TransportClient, Int) {
+    ) async throws -> PreparedTransport {
         let config = TransportConfiguration(
             host: host,
             port: port,
@@ -348,7 +432,12 @@ public final class SessionManager {
         do {
             logger.info("Connecting to \(host, privacy: .public):\(port)")
             try await client.connect()
-            return (client, generation)
+            let videoDatagrams = client.armVideoDatagramReceive()
+            return PreparedTransport(
+                client: client,
+                generation: generation,
+                videoDatagrams: videoDatagrams
+            )
         } catch {
             await invalidateTransport(generation: generation, reason: nil)
             throw error
@@ -364,6 +453,9 @@ public final class SessionManager {
     private func invalidateCurrentTransport(reason: String?) async {
         monitorTask?.cancel()
         monitorTask = nil
+        videoMonitorTask?.cancel()
+        videoMonitorTask = nil
+        await videoPipeline.reset(statusMessage: "Waiting for stream")
 
         guard let transport else {
             self.transport = nil

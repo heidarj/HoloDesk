@@ -19,11 +19,11 @@ struct ContentView: View {
             if !session.state.isConnected {
                 connectionForm
             } else {
-                connectedActions
+                connectedSessionView
             }
         }
         .padding(40)
-        .frame(minWidth: 400)
+        .frame(minWidth: 520, minHeight: 680)
     }
 
     @ViewBuilder
@@ -58,11 +58,11 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 TextField("Host", text: $hostAddress)
                     .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 200)
+                    .frame(maxWidth: 220)
 
                 TextField("Port", text: $port)
                     .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 80)
+                    .frame(maxWidth: 90)
             }
 
             Button {
@@ -77,6 +77,75 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
             .disabled(isConnecting)
         }
+    }
+
+    @ViewBuilder
+    private var connectedSessionView: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.06, green: 0.07, blue: 0.09),
+                                Color(red: 0.01, green: 0.01, blue: 0.02),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+
+                VideoDisplayView(renderer: session.videoRenderer)
+                    .padding(10)
+
+                if session.videoRenderer.isAwaitingFrame {
+                    VStack(spacing: 10) {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                        Text(session.videoRenderer.statusMessage)
+                            .font(.headline)
+                        Text("The QUIC session is connected. Waiting for the first decoded H.264 frame.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 360)
+                    }
+                    .padding(24)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+                }
+            }
+            .frame(minWidth: 820, idealWidth: 920, maxWidth: 980, minHeight: 420, idealHeight: 520)
+            .overlay(alignment: .topLeading) {
+                videoBadge
+                    .padding(18)
+            }
+
+            if let issue = session.videoRenderer.lastErrorMessage {
+                Text(issue)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 820, alignment: .leading)
+            }
+
+            connectedActions
+        }
+    }
+
+    @ViewBuilder
+    private var videoBadge: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(session.videoRenderer.statusMessage)
+                .font(.headline)
+            Text(session.videoRenderer.frameSizeDescription)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text("Frames presented: \(session.videoRenderer.framesPresented)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
     @ViewBuilder

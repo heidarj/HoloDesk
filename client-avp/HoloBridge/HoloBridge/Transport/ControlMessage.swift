@@ -37,6 +37,7 @@ public struct ControlMessage: Codable, Sendable, Equatable {
     public static let protocolVersion = 1
     public static let defaultALPN = "holobridge-m2"
     public static let controlStreamCapability = "control-stream-v1"
+    public static let videoDatagramCapability = "video-datagram-h264-v1"
 
     public let type: ControlMessageType
     public let protocolVersion: Int?

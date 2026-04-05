@@ -1,7 +1,24 @@
-use std::{error::Error, fmt, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    error::Error,
+    fmt,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
-use quinn::{Endpoint, RecvStream, SendStream};
-use tokio::time::{sleep, timeout};
+use holobridge_capture::{
+    CaptureBackend, CaptureConfig, CaptureError, CaptureSession, CaptureTarget, DisplayId,
+    DxgiCaptureBackend,
+};
+use holobridge_encode::{
+    recommended_bitrate_bps, EncodeError, EncodedAccessUnit, MfH264Encoder, VideoEncoder,
+    VideoEncoderConfig,
+};
+use quinn::{Connection, Endpoint, RecvStream, SendStream};
+use tokio::{task::JoinHandle, time::{sleep, timeout}};
 use tracing::{info, warn};
 
 use holobridge_auth::{
@@ -10,9 +27,16 @@ use holobridge_auth::{
 use holobridge_session::{SessionError, SessionManager};
 
 use crate::{
-    config::{TransportClientConfig, TransportServerConfig},
+    config::{TransportClientConfig, TransportServerConfig, VideoStreamConfig},
     connection::{ConnectionError, ConnectionRole, ControlConnection, HandshakeAction},
-    protocol::{ControlMessage, ControlMessageCodec, FrameAccumulator, ProtocolError},
+    media::{
+        negotiated_datagram_payload_limit, H264DatagramPacketizer, MediaDatagramError,
+        VIDEO_DATAGRAM_CAPABILITY,
+    },
+    protocol::{
+        ControlMessage, ControlMessageCodec, FrameAccumulator, ProtocolError,
+        CONTROL_STREAM_CAPABILITY,
+    },
     tls::{build_client_config, build_server_config, TlsConfigError},
 };
 
@@ -32,6 +56,9 @@ pub enum TransportError {
     Runtime(String),
     Auth(AuthError),
     Session(SessionError),
+    Capture(CaptureError),
+    Encode(EncodeError),
+    Media(MediaDatagramError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +92,11 @@ pub struct TransportSmokeClient {
 }
 
 const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct ActiveVideoStream {
+    stop_requested: Arc<AtomicBool>,
+    monitor_handle: JoinHandle<()>,
+}
 
 impl TransportServer {
     pub fn new(config: TransportServerConfig) -> Self {
@@ -176,9 +208,11 @@ impl TransportServer {
             info!("host transport control stream accepted");
 
             let result = run_server_control_stream(
+                connection.clone(),
                 send,
                 recv,
                 self.config.server_initiated_close_after_ack,
+                self.config.video.clone(),
                 self.auth_validator.clone(),
                 self.user_store.clone(),
                 self.resume_tokens.clone(),
@@ -263,6 +297,7 @@ impl TransportSmokeClient {
             send,
             recv,
             self.config.send_goodbye_after_ack,
+            self.config.request_video_stream,
             self.config.identity_token.as_deref(),
             self.config.resume_token.as_deref(),
         )
@@ -275,10 +310,279 @@ impl TransportSmokeClient {
     }
 }
 
+impl ActiveVideoStream {
+    fn stop(&self) {
+        self.stop_requested.store(true, Ordering::Relaxed);
+    }
+
+    async fn join(self) {
+        let _ = self.monitor_handle.await;
+    }
+}
+
+fn start_video_stream(
+    connection: Connection,
+    video_config: VideoStreamConfig,
+) -> Result<ActiveVideoStream, TransportError> {
+    let initial_payload_limit = negotiated_datagram_payload_limit(
+        connection.max_datagram_size(),
+        video_config.datagram_payload_cap_bytes,
+    )
+    .ok_or_else(|| {
+        TransportError::Runtime(
+            "video datagrams are not available on this QUIC connection".to_owned(),
+        )
+    })?;
+    info!(
+        payload_limit = initial_payload_limit,
+        "host video stream worker starting"
+    );
+
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let stop_for_worker = Arc::clone(&stop_requested);
+    let stop_for_monitor = Arc::clone(&stop_requested);
+    let connection_for_worker = connection.clone();
+    let connection_for_monitor = connection.clone();
+    let worker = tokio::task::spawn_blocking(move || {
+        run_video_stream_worker(connection_for_worker, video_config, stop_for_worker)
+    });
+    let monitor_handle = tokio::spawn(async move {
+        match worker.await {
+            Ok(Ok(())) => {
+                info!("host video stream worker stopped");
+            }
+            Ok(Err(error)) => {
+                if !stop_for_monitor.load(Ordering::Relaxed) {
+                    warn!(error = %error, "host video stream worker failed");
+                    connection_for_monitor.close(
+                        quinn::VarInt::from_u32(1),
+                        b"video-stream-worker-failed",
+                    );
+                }
+            }
+            Err(error) => {
+                if !stop_for_monitor.load(Ordering::Relaxed) {
+                    warn!(error = %error, "host video stream worker panicked");
+                    connection_for_monitor.close(
+                        quinn::VarInt::from_u32(1),
+                        b"video-stream-worker-panicked",
+                    );
+                }
+            }
+        }
+    });
+
+    Ok(ActiveVideoStream {
+        stop_requested,
+        monitor_handle,
+    })
+}
+
+fn run_video_stream_worker(
+    connection: Connection,
+    video_config: VideoStreamConfig,
+    stop_requested: Arc<AtomicBool>,
+) -> Result<(), TransportError> {
+    #[cfg(test)]
+    if let Some(synthetic_access_units) = video_config.synthetic_access_units.clone() {
+        return run_synthetic_video_stream_worker(
+            connection,
+            &video_config,
+            stop_requested,
+            &synthetic_access_units,
+        );
+    }
+
+    let backend = DxgiCaptureBackend::new().map_err(TransportError::Capture)?;
+    let capture_target = match video_config.display_id.as_deref() {
+        Some(display_id) => CaptureTarget::Display(
+            display_id
+                .parse::<DisplayId>()
+                .map_err(|error| TransportError::Runtime(format!("invalid video display id: {error}")))?,
+        ),
+        None => CaptureTarget::Primary,
+    };
+    let mut capture = backend
+        .open(
+            capture_target,
+            CaptureConfig {
+                timeout_ms: video_config.capture_timeout_ms,
+                target_fps_hint: Some(video_config.frame_rate_num),
+            },
+        )
+        .map_err(TransportError::Capture)?;
+
+    let first_frame = wait_for_first_frame(
+        capture.as_mut(),
+        Duration::from_secs(video_config.first_frame_timeout_secs),
+        &stop_requested,
+    )?;
+    let metadata = first_frame.metadata();
+    let bitrate_bps = video_config.bitrate_bps.unwrap_or_else(|| {
+        recommended_bitrate_bps(
+            metadata.width,
+            metadata.height,
+            video_config.frame_rate_num,
+            video_config.frame_rate_den,
+        )
+    });
+    let encoder_config = VideoEncoderConfig::new(
+        metadata.width,
+        metadata.height,
+        bitrate_bps,
+        video_config.frame_rate_num,
+        video_config.frame_rate_den,
+    );
+
+    #[cfg(windows)]
+    let mut encoder = MfH264Encoder::new(&capture.d3d11_device(), encoder_config)
+        .map_err(TransportError::Encode)?;
+    #[cfg(not(windows))]
+    let mut encoder =
+        MfH264Encoder::new(encoder_config).map_err(TransportError::Encode)?;
+
+    let mut packetizer = H264DatagramPacketizer::default();
+    send_encoded_access_units(
+        &connection,
+        &video_config,
+        &mut packetizer,
+        encoder.encode(&first_frame).map_err(TransportError::Encode)?,
+    )?;
+
+    while !stop_requested.load(Ordering::Relaxed) {
+        let Some(frame) = capture.acquire_frame().map_err(TransportError::Capture)? else {
+            continue;
+        };
+        let access_units = encoder.encode(&frame).map_err(TransportError::Encode)?;
+        send_encoded_access_units(
+            &connection,
+            &video_config,
+            &mut packetizer,
+            access_units,
+        )?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+fn run_synthetic_video_stream_worker(
+    connection: Connection,
+    video_config: &VideoStreamConfig,
+    stop_requested: Arc<AtomicBool>,
+    synthetic_access_units: &[crate::config::SyntheticAccessUnit],
+) -> Result<(), TransportError> {
+    let frame_period = if video_config.frame_rate_num == 0 || video_config.frame_rate_den == 0 {
+        Duration::from_millis(16)
+    } else {
+        Duration::from_secs_f64(
+            video_config.frame_rate_den as f64 / video_config.frame_rate_num as f64,
+        )
+    };
+    let mut packetizer = H264DatagramPacketizer::default();
+
+    while !stop_requested.load(Ordering::Relaxed) {
+        for access_unit in synthetic_access_units {
+            if stop_requested.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+
+            let access_unit = EncodedAccessUnit {
+                data: access_unit.data.clone(),
+                is_keyframe: access_unit.is_keyframe,
+                pts_100ns: access_unit.pts_100ns,
+                duration_100ns: access_unit.duration_100ns,
+            };
+            send_encoded_access_units(
+                &connection,
+                video_config,
+                &mut packetizer,
+                vec![access_unit],
+            )?;
+            std::thread::sleep(frame_period);
+        }
+    }
+
+    Ok(())
+}
+
+fn send_encoded_access_units(
+    connection: &Connection,
+    video_config: &VideoStreamConfig,
+    packetizer: &mut H264DatagramPacketizer,
+    access_units: Vec<EncodedAccessUnit>,
+) -> Result<(), TransportError> {
+    for access_unit in access_units {
+        let Some(payload_limit) = negotiated_datagram_payload_limit(
+            connection.max_datagram_size(),
+            video_config.datagram_payload_cap_bytes,
+        ) else {
+            return Err(TransportError::Runtime(
+                "peer does not currently accept QUIC datagrams".to_owned(),
+            ));
+        };
+
+        let datagrams = packetizer
+            .packetize(&access_unit, payload_limit)
+            .map_err(TransportError::Media)?;
+        for datagram in datagrams {
+            match connection.send_datagram(datagram) {
+                Ok(()) => {}
+                Err(quinn::SendDatagramError::UnsupportedByPeer) => {
+                    return Err(TransportError::Runtime(
+                        "peer does not support QUIC datagrams".to_owned(),
+                    ))
+                }
+                Err(quinn::SendDatagramError::Disabled) => {
+                    return Err(TransportError::Runtime(
+                        "QUIC datagram support is disabled locally".to_owned(),
+                    ))
+                }
+                Err(quinn::SendDatagramError::TooLarge) => {
+                    warn!(
+                        pts_100ns = access_unit.pts_100ns,
+                        "dropping oversized access unit after MTU change"
+                    );
+                    break;
+                }
+                Err(quinn::SendDatagramError::ConnectionLost(error)) => {
+                    return Err(TransportError::Quinn(error))
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn wait_for_first_frame(
+    capture: &mut dyn CaptureSession,
+    timeout: Duration,
+    stop_requested: &AtomicBool,
+) -> Result<holobridge_capture::CapturedFrame, TransportError> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if stop_requested.load(Ordering::Relaxed) {
+            return Err(TransportError::Runtime(
+                "video stream startup was cancelled".to_owned(),
+            ));
+        }
+        if let Some(frame) = capture.acquire_frame().map_err(TransportError::Capture)? {
+            return Ok(frame);
+        }
+    }
+
+    Err(TransportError::Timeout(
+        "timed out waiting for the first captured video frame",
+    ))
+}
+
 async fn run_server_control_stream(
+    connection: Connection,
     mut send: SendStream,
     mut recv: RecvStream,
     server_initiated_close: bool,
+    video_config: VideoStreamConfig,
     auth_validator: Option<Arc<TokenValidator>>,
     user_store: Option<Arc<AuthorizedUserStore>>,
     resume_tokens: Option<Arc<ResumeTokenService>>,
@@ -288,9 +592,14 @@ async fn run_server_control_stream(
     let mut accumulator = FrameAccumulator::default();
     let mut active_session_id: Option<String> = None;
     let mut session_established = false;
+    let mut client_capabilities = Vec::new();
+    let mut video_stream: Option<ActiveVideoStream> = None;
 
     let messages = read_messages(&mut recv, &mut accumulator).await?;
     for message in messages {
+        if let ControlMessage::Hello { capabilities, .. } = &message {
+            client_capabilities = capabilities.clone();
+        }
         info!(
             kind = message.kind(),
             "host transport received control message"
@@ -346,6 +655,16 @@ async fn run_server_control_stream(
                                     Some(created.resume_token_ttl_secs),
                                 );
                                 send_message(&mut send, &result).await?;
+                                if video_config.enabled
+                                    && client_capabilities.iter().any(|capability| {
+                                        capability == VIDEO_DATAGRAM_CAPABILITY
+                                    })
+                                {
+                                    video_stream = Some(start_video_stream(
+                                        connection.clone(),
+                                        video_config.clone(),
+                                    )?);
+                                }
                             } else {
                                 warn!(sub, "auth failed: user not authorized");
                                 let result = protocol.record_auth_result(
@@ -402,6 +721,16 @@ async fn run_server_control_stream(
                                     Some(resumed.resume_token_ttl_secs),
                                 );
                                 send_message(&mut send, &result).await?;
+                                if video_config.enabled
+                                    && client_capabilities.iter().any(|capability| {
+                                        capability == VIDEO_DATAGRAM_CAPABILITY
+                                    })
+                                {
+                                    video_stream = Some(start_video_stream(
+                                        connection.clone(),
+                                        video_config.clone(),
+                                    )?);
+                                }
                             }
                             Err(error) => {
                                 warn!(error = %error, "session resume failed");
@@ -497,6 +826,11 @@ async fn run_server_control_stream(
         send.finish()?;
     }
 
+    if let Some(video_stream) = video_stream {
+        video_stream.stop();
+        video_stream.join().await;
+    }
+
     if let Some(session_id) = active_session_id {
         if let Some(sessions) = &session_manager {
             if unexpected_disconnect {
@@ -527,13 +861,14 @@ async fn run_client_control_stream(
     mut send: SendStream,
     mut recv: RecvStream,
     send_goodbye_after_ack: bool,
+    request_video_stream: bool,
     identity_token: Option<&str>,
     resume_token: Option<&str>,
 ) -> Result<(), TransportError> {
     let mut protocol = ControlConnection::new(ConnectionRole::Client);
     let mut accumulator = FrameAccumulator::default();
 
-    let hello = ControlMessage::hello_smoke();
+    let hello = hello_message(request_video_stream);
     protocol.record_outbound(hello.clone());
     info!(
         kind = hello.kind(),
@@ -716,8 +1051,19 @@ impl fmt::Display for TransportError {
             Self::Runtime(reason) => write!(formatter, "{reason}"),
             Self::Auth(error) => write!(formatter, "auth error: {error}"),
             Self::Session(error) => write!(formatter, "session error: {error}"),
+            Self::Capture(error) => write!(formatter, "capture error: {error}"),
+            Self::Encode(error) => write!(formatter, "encode error: {error}"),
+            Self::Media(error) => write!(formatter, "media datagram error: {error}"),
         }
     }
+}
+
+fn hello_message(request_video_stream: bool) -> ControlMessage {
+    let mut capabilities = vec![CONTROL_STREAM_CAPABILITY.to_owned()];
+    if request_video_stream {
+        capabilities.push(VIDEO_DATAGRAM_CAPABILITY.to_owned());
+    }
+    ControlMessage::hello("transport-smoke", capabilities)
 }
 
 impl Error for TransportError {}
@@ -770,14 +1116,37 @@ impl From<SessionError> for TransportError {
     }
 }
 
+impl From<CaptureError> for TransportError {
+    fn from(value: CaptureError) -> Self {
+        Self::Capture(value)
+    }
+}
+
+impl From<EncodeError> for TransportError {
+    fn from(value: EncodeError) -> Self {
+        Self::Encode(value)
+    }
+}
+
+impl From<MediaDatagramError> for TransportError {
+    fn from(value: MediaDatagramError) -> Self {
+        Self::Media(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{net::UdpSocket, path::PathBuf};
+    use std::{net::UdpSocket, path::PathBuf, time::Instant};
 
     use tempfile::TempDir;
     use tokio::time::sleep;
 
     use holobridge_auth::test_keys::{create_test_jwt, generate_test_rsa_keypair};
+
+    use crate::{
+        config::SyntheticAccessUnit,
+        media::{H264DatagramReassembler, ReassembledAccessUnit, ReassemblerConfig},
+    };
 
     use super::*;
 
@@ -853,7 +1222,7 @@ mod tests {
         let (mut send, mut recv) = connection.open_bi().await.map_err(TransportError::Quinn)?;
         let mut accumulator = FrameAccumulator::default();
 
-        send_message(&mut send, &ControlMessage::hello_smoke()).await?;
+        send_message(&mut send, &hello_message(config.request_video_stream)).await?;
         let hello_messages = read_messages(&mut recv, &mut accumulator).await?;
         assert!(hello_messages
             .iter()
@@ -887,6 +1256,145 @@ mod tests {
         connection.close(quinn::VarInt::from_u32(0), b"done");
         endpoint.wait_idle().await;
         Ok(result)
+    }
+
+    struct ConnectedClient {
+        endpoint: Endpoint,
+        connection: Connection,
+        send: SendStream,
+        recv: RecvStream,
+        accumulator: FrameAccumulator,
+    }
+
+    impl ConnectedClient {
+        async fn connect(config: &TransportClientConfig) -> Result<Self, TransportError> {
+            let client_config = build_client_config(config)?;
+            let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())?;
+            endpoint.set_default_client_config(client_config);
+
+            let server_addr: SocketAddr = config
+                .remote_endpoint()
+                .parse()
+                .map_err(|_| TransportError::InvalidEndpoint(config.remote_endpoint()))?;
+            let server_name = config
+                .server_name
+                .clone()
+                .unwrap_or_else(|| config.server_host.clone());
+
+            let connection = timeout(
+                CLIENT_WAIT_TIMEOUT,
+                endpoint.connect(server_addr, &server_name)?,
+            )
+            .await
+            .map_err(|_| TransportError::Timeout("timed out connecting to server"))?
+            .map_err(TransportError::Quinn)?;
+
+            let (send, recv) = connection.open_bi().await.map_err(TransportError::Quinn)?;
+            Ok(Self {
+                endpoint,
+                connection,
+                send,
+                recv,
+                accumulator: FrameAccumulator::default(),
+            })
+        }
+
+        async fn exchange_hello(&mut self, request_video_stream: bool) -> Result<(), TransportError> {
+            send_message(&mut self.send, &hello_message(request_video_stream)).await?;
+            let hello_messages = read_messages(&mut self.recv, &mut self.accumulator).await?;
+            assert!(hello_messages
+                .iter()
+                .any(|message| matches!(message, ControlMessage::HelloAck { .. })));
+            Ok(())
+        }
+
+        async fn authenticate(&mut self, identity_token: &str) -> Result<ControlMessage, TransportError> {
+            send_message(
+                &mut self.send,
+                &ControlMessage::authenticate(identity_token),
+            )
+            .await?;
+            self.read_session_result().await
+        }
+
+        async fn resume(&mut self, resume_token: &str) -> Result<ControlMessage, TransportError> {
+            send_message(
+                &mut self.send,
+                &ControlMessage::resume_session(resume_token),
+            )
+            .await?;
+            self.read_session_result().await
+        }
+
+        async fn read_media_access_unit(
+            &self,
+            reassembler: &mut H264DatagramReassembler,
+        ) -> Result<ReassembledAccessUnit, TransportError> {
+            loop {
+                let datagram = timeout(Duration::from_secs(2), self.connection.read_datagram())
+                    .await
+                    .map_err(|_| {
+                        TransportError::Timeout(
+                            "timed out waiting for media datagram during loopback test",
+                        )
+                    })?
+                    .map_err(TransportError::Quinn)?;
+
+                if let Some(access_unit) = reassembler
+                    .push_datagram(&datagram, Instant::now())
+                    .map_err(TransportError::Media)?
+                {
+                    return Ok(access_unit);
+                }
+            }
+        }
+
+        async fn close_gracefully(mut self) -> Result<(), TransportError> {
+            send_message(&mut self.send, &ControlMessage::goodbye("test-goodbye")).await?;
+            self.send.finish()?;
+            self.connection.close(quinn::VarInt::from_u32(0), b"done");
+            self.endpoint.wait_idle().await;
+            Ok(())
+        }
+
+        async fn close_abrupt(self) {
+            self.connection.close(quinn::VarInt::from_u32(0), b"done");
+            self.endpoint.wait_idle().await;
+        }
+
+        async fn read_session_result(&mut self) -> Result<ControlMessage, TransportError> {
+            let result_messages = read_messages(&mut self.recv, &mut self.accumulator).await?;
+            Ok(result_messages
+                .into_iter()
+                .find(|message| {
+                    matches!(
+                        message,
+                        ControlMessage::AuthResult { .. } | ControlMessage::ResumeResult { .. }
+                    )
+                })
+                .expect("expected auth_result or resume_result"))
+        }
+    }
+
+    fn test_video_payload() -> Vec<u8> {
+        (0..2_800u32)
+            .map(|index| ((index % 251) as u8).wrapping_add(1))
+            .collect()
+    }
+
+    fn test_video_server_config(port: u16) -> TransportServerConfig {
+        let mut config = test_server_config(port);
+        config.video.enabled = true;
+        #[cfg(test)]
+        {
+            config.video.synthetic_access_units = Some(vec![SyntheticAccessUnit {
+                data: test_video_payload(),
+                is_keyframe: true,
+                pts_100ns: 166_666,
+                duration_100ns: 166_666,
+            }]);
+        }
+        config
     }
 
     #[tokio::test]
@@ -1097,6 +1605,134 @@ mod tests {
             other => panic!("unexpected message: {:?}", other),
         }
 
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn loopback_auth_starts_media_datagrams_and_reassembles_access_units() {
+        let (private_pem, public_pem) = generate_test_rsa_keypair();
+        let tmp = TempDir::new().unwrap();
+        let pub_key_path = tmp.path().join("pub.pem");
+        std::fs::write(&pub_key_path, &public_pem).unwrap();
+
+        let port = free_port();
+        let auth_config = test_auth_config(&tmp, pub_key_path.to_str().unwrap(), 60);
+        let server = TransportServer::with_auth(test_video_server_config(port), &auth_config)
+            .await
+            .unwrap();
+
+        let server_task = tokio::spawn(async move { server.serve_n(1).await });
+        sleep(Duration::from_millis(100)).await;
+
+        let identity_token = create_test_jwt(
+            &private_pem,
+            "video-user-1",
+            &auth_config.apple_bundle_id,
+            false,
+        );
+        let mut client_config = test_client_config(port);
+        client_config.request_video_stream = true;
+
+        let mut client = ConnectedClient::connect(&client_config).await.unwrap();
+        client.exchange_hello(true).await.unwrap();
+
+        let auth_result = client.authenticate(&identity_token).await.unwrap();
+        match auth_result {
+            ControlMessage::AuthResult { success, .. } => assert!(success),
+            other => panic!("unexpected message: {:?}", other),
+        }
+
+        let mut reassembler = H264DatagramReassembler::new(ReassemblerConfig::default());
+        let access_unit = client.read_media_access_unit(&mut reassembler).await.unwrap();
+        assert_eq!(access_unit.access_unit_id, 1);
+        assert_eq!(access_unit.data, test_video_payload());
+        assert!(access_unit.is_keyframe);
+        assert_eq!(access_unit.pts_100ns, 166_666);
+        assert_eq!(access_unit.duration_100ns, 166_666);
+
+        client.close_gracefully().await.unwrap();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn loopback_resume_restarts_media_stream_on_new_quic_connection() {
+        let (private_pem, public_pem) = generate_test_rsa_keypair();
+        let tmp = TempDir::new().unwrap();
+        let pub_key_path = tmp.path().join("pub.pem");
+        std::fs::write(&pub_key_path, &public_pem).unwrap();
+
+        let port = free_port();
+        let auth_config = test_auth_config(&tmp, pub_key_path.to_str().unwrap(), 60);
+        let server = TransportServer::with_auth(test_video_server_config(port), &auth_config)
+            .await
+            .unwrap();
+
+        let server_task = tokio::spawn(async move { server.serve_n(2).await });
+        sleep(Duration::from_millis(100)).await;
+
+        let identity_token = create_test_jwt(
+            &private_pem,
+            "video-user-2",
+            &auth_config.apple_bundle_id,
+            false,
+        );
+        let mut client_config = test_client_config(port);
+        client_config.request_video_stream = true;
+
+        let mut initial_client = ConnectedClient::connect(&client_config).await.unwrap();
+        initial_client.exchange_hello(true).await.unwrap();
+        let auth_result = initial_client.authenticate(&identity_token).await.unwrap();
+        let (session_id, resume_token) = match auth_result {
+            ControlMessage::AuthResult {
+                success,
+                session_id,
+                resume_token,
+                ..
+            } => {
+                assert!(success);
+                (session_id.unwrap(), resume_token.unwrap())
+            }
+            other => panic!("unexpected message: {:?}", other),
+        };
+
+        let mut first_reassembler = H264DatagramReassembler::new(ReassemblerConfig::default());
+        let initial_access_unit = initial_client
+            .read_media_access_unit(&mut first_reassembler)
+            .await
+            .unwrap();
+        assert_eq!(initial_access_unit.access_unit_id, 1);
+        assert_eq!(initial_access_unit.data, test_video_payload());
+
+        initial_client.close_abrupt().await;
+        sleep(Duration::from_millis(100)).await;
+
+        let mut resumed_client = ConnectedClient::connect(&client_config).await.unwrap();
+        resumed_client.exchange_hello(true).await.unwrap();
+        let resume_result = resumed_client.resume(&resume_token).await.unwrap();
+        match resume_result {
+            ControlMessage::ResumeResult {
+                success,
+                session_id: resumed_session_id,
+                resume_token: rotated_resume_token,
+                ..
+            } => {
+                assert!(success);
+                assert_eq!(resumed_session_id.as_deref(), Some(session_id.as_str()));
+                assert_ne!(rotated_resume_token.as_deref(), Some(resume_token.as_str()));
+            }
+            other => panic!("unexpected message: {:?}", other),
+        }
+
+        let mut resumed_reassembler = H264DatagramReassembler::new(ReassemblerConfig::default());
+        let resumed_access_unit = resumed_client
+            .read_media_access_unit(&mut resumed_reassembler)
+            .await
+            .unwrap();
+        assert_eq!(resumed_access_unit.access_unit_id, 1);
+        assert_eq!(resumed_access_unit.data, test_video_payload());
+        assert!(resumed_access_unit.is_keyframe);
+
+        resumed_client.close_gracefully().await.unwrap();
         server_task.await.unwrap().unwrap();
     }
 }

@@ -4,9 +4,9 @@
 
 ## Current Milestone
 
-**Milestone 6 – (next)**
+**Milestone 6 – in progress**
 
-Milestones 1 through 5 are complete. The host now enumerates Windows displays, captures DXGI Desktop Duplication frames, and encodes them as H.264 NALUs via a hardware Media Foundation MFT with a zero-copy GPU path and 1.45 ms average encode latency at 3840x2160. Milestone 5 was validated on 2026-04-05 on a native Windows console session with an attached display.
+Milestones 1 through 5 are complete, and the Milestone 6 implementation has now landed in the repo. The Rust host can advertise `video-datagram-h264-v1`, start a per-connection video worker after auth or resume, fragment Annex-B H.264 access units over QUIC datagrams, and reassemble them in loopback tests. The canonical visionOS app target now has a best-effort QUIC tunnel receive path, H.264 datagram reassembly, VideoToolbox decode pipeline, and a Metal-backed flat video display surface, but Apple-side build/debug/runtime acceptance is deferred to a later Mac/AVP pass.
 
 ---
 
@@ -25,6 +25,12 @@ Milestones 1 through 5 are complete. The host now enumerates Windows displays, c
 
 ## Latest Changes
 
+- Added Milestone 6 host transport/media support in `host/transport/`: `VideoStreamConfig`, QUIC datagram buffer configuration in the quinn transport config, the `video-datagram-h264-v1` capability, an H.264 media datagram header/packetizer/reassembler, and a per-connection video worker that starts only after successful auth or resume when the client advertises video support.
+- Reused the existing DXGI capture + Media Foundation encoder path inside the new host media worker and kept datagram sequencing connection-local so abrupt disconnects and resume recreate the video worker cleanly on the new QUIC connection.
+- Added a Windows-only `video_smoke_client` binary plus Milestone 6 workflow scripts: `host-video-build.ps1`, `host-video-test.ps1`, and `host-video-smoke.ps1`.
+- Added host loopback integration coverage for `auth -> media datagram receive -> access-unit reassembly` and `abrupt disconnect -> resume -> media restart on the new QUIC connection`, using synthetic access units under `cfg(test)` so the transport restart behavior is validated without requiring live capture hardware in CI-style tests.
+- Refactored the canonical visionOS app target under `client-avp/HoloBridge/HoloBridge` to use a QUIC tunnel client surface, arm video datagram receive before sending `hello`, keep control/auth/resume on a control stream, and hand media datagrams into a separate video pipeline owned by `SessionManager`.
+- Added best-effort client-side Milestone 6 pipeline pieces in the canonical app target: a Rust-compatible H.264 datagram reassembler, a VideoToolbox H.264 Annex-B decoder, a Metal `MTKView` renderer that samples decoded NV12 pixel buffers through `CVMetalTextureCache`, and a connected UI that presents a flat video surface with loading / status overlays instead of only connect/disconnect controls.
 - Fixed the async MFT event protocol in `MfH264Encoder`: `ProcessOutput` is now always gated on `METransformHaveOutput` events for hardware encoders, `MF_E_NOTACCEPTING` recovery uses a blocking event wait instead of non-blocking polling, and `flush()` uses a dedicated async drain loop that terminates on `METransformDrainComplete`.
 - Added `host/encode/` as a new workspace crate with the public `VideoEncoder` surface, `VideoEncoderConfig`, `EncodedAccessUnit`, `EncodeError`, `H264Profile`, and a Windows-only `MfH264Encoder` backed by Media Foundation hardware H.264 MFTs.
 - Extended `host/capture/` so Windows capture sessions now expose their underlying `ID3D11Device`, and updated the DXGI capture device creation flags to include D3D11 video support for downstream GPU-only encoding.
@@ -107,6 +113,15 @@ Milestones 1 through 5 are complete. The host now enumerates Windows displays, c
 - [x] `cargo test -p holobridge-encode` passes on macOS, including config, GOP, bitrate, and Annex-B helper tests.
 - [x] Windows-only hardware tests exist under `host/encode/tests/` for encoder creation, short-run encode output, and keyframe presence.
 
+### Milestone 6
+
+- [x] `cargo test -p holobridge-transport` passes on Windows after the Milestone 6 transport/media work, including 2 new loopback integration tests for video datagram startup and video restart after resume.
+- [x] `scripts/host-video-build.ps1` succeeds and builds `quic_server`, `video_smoke_client`, and `test_keygen`.
+- [x] The host transport now defaults video off, preserving Milestone 1-5 smoke behavior unless `HOLOBRIDGE_VIDEO_ENABLED=true` is set.
+- [x] Host loopback validation covers header encode/decode, fragmentation/reassembly, out-of-order fragments, incomplete-frame expiry, auth -> video datagram receive, and resume-triggered media restart on a new QUIC connection.
+- [ ] Native Windows `scripts/host-video-smoke.ps1` did not complete successfully in the current desktop session on 2026-04-05: `IDXGIOutput1::DuplicateOutput` failed with `0x80070005 (Access is denied)`, causing the host to close the QUIC connection before the smoke client received video datagrams.
+- [ ] `xcodebuild` validation for the canonical visionOS target has not been run from this Windows desktop. The app-side Milestone 6 implementation is best-effort and still requires a later Mac / Apple Vision Pro build-and-debug pass.
+
 ---
 
 ## Known Limitations
@@ -115,12 +130,14 @@ Milestones 1 through 5 are complete. The host now enumerates Windows displays, c
 - The Media Foundation backend currently selects the first compatible hardware H.264 MFT. There is no vendor-specific encoder selection or capability ranking yet.
 - Authorization is still effectively first-user bootstrap by default; there is no explicit admin flow yet for reviewing or pre-registering Apple `sub` values.
 - Resume state is memory-only on both sides in Milestone 3. If the host process or the app restarts, the user must authenticate again.
+- The Milestone 6 visionOS transport / decode / display path was authored best-effort from Windows and has not yet been compiled or debugged with Xcode on Mac hardware.
+- The current Windows desktop session used for Milestone 6 smoke validation did not grant DXGI Desktop Duplication access (`0x80070005`). A real local console session with duplication access is still required for native host video smoke acceptance.
 
 ---
 
 ## Next Recommended Step
 
-Begin Milestone 6 planning. All prior milestones are validated and closed.
+Re-run `scripts/host-video-smoke.ps1` from a Windows console session that has DXGI duplication access, then build/debug the canonical `client-avp/HoloBridge/HoloBridge` target with `xcodebuild` on a Mac / Apple Vision Pro to finish Milestone 6 acceptance.
 
 ---
 

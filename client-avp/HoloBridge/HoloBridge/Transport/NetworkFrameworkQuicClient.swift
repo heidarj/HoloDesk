@@ -8,8 +8,11 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
     public let configuration: TransportConfiguration
 
     private let queue: DispatchQueue
-    private var connection: NWConnection?
+    private var connectionGroup: NWConnectionGroup?
+    private var controlConnection: NWConnection?
     private var framer = ControlMessageFramer()
+    private var videoDatagramStream: AsyncThrowingStream<Data, Error>?
+    private var videoDatagramContinuation: AsyncThrowingStream<Data, Error>.Continuation?
 
     public init(
         configuration: TransportConfiguration,
@@ -20,11 +23,13 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
     }
 
     deinit {
-        connection?.cancel()
+        controlConnection?.cancel()
+        connectionGroup?.cancel()
+        finishVideoDatagrams(error: nil)
     }
 
     public func connect() async throws {
-        guard connection == nil else {
+        guard controlConnection == nil, connectionGroup == nil else {
             return
         }
 
@@ -33,43 +38,111 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         }
 
         let parameters = try Self.makeParameters(configuration: configuration, queue: queue)
-        let connection = NWConnection(
-            host: NWEndpoint.Host(configuration.host),
-            port: port,
-            using: parameters
+        let descriptor = NWMultiplexGroup(
+            to: .hostPort(
+                host: NWEndpoint.Host(configuration.host),
+                port: port
+            )
         )
-        self.connection = connection
+        let group = NWConnectionGroup(with: descriptor, using: parameters)
+        self.connectionGroup = group
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.stateUpdateHandler = { state in
+            var didResume = false
+
+            group.stateUpdateHandler = { [weak self] state in
+                self?.handleGroupStateChange(state)
+
+                guard !didResume else {
+                    return
+                }
+
                 switch state {
                 case .ready:
-                    connection.stateUpdateHandler = nil
+                    didResume = true
                     continuation.resume()
                 case .failed(let error):
-                    connection.stateUpdateHandler = nil
+                    didResume = true
                     continuation.resume(throwing: TransportClientError.connectionFailed(String(describing: error)))
                 case .cancelled:
-                    connection.stateUpdateHandler = nil
+                    didResume = true
                     continuation.resume(throwing: TransportClientError.connectionClosed)
                 default:
                     break
                 }
             }
 
-            connection.start(queue: self.queue)
+            group.setReceiveHandler(
+                maximumMessageSize: 65_536,
+                rejectOversizedMessages: true
+            ) { [weak self] _, content, isComplete in
+                self?.handleMediaDatagram(content: content, isComplete: isComplete)
+            }
+
+            group.start(queue: self.queue)
+        }
+
+        let controlConnection = NWConnection(from: group)
+        self.controlConnection = controlConnection
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            var didResume = false
+
+            controlConnection.stateUpdateHandler = { [weak self] state in
+                self?.handleControlStateChange(state)
+
+                guard !didResume else {
+                    return
+                }
+
+                switch state {
+                case .ready:
+                    didResume = true
+                    continuation.resume()
+                case .failed(let error):
+                    didResume = true
+                    continuation.resume(throwing: TransportClientError.connectionFailed(String(describing: error)))
+                case .cancelled:
+                    didResume = true
+                    continuation.resume(throwing: TransportClientError.connectionClosed)
+                default:
+                    break
+                }
+            }
+
+            controlConnection.start(queue: self.queue)
         }
     }
 
+    public func armVideoDatagramReceive() -> AsyncThrowingStream<Data, Error> {
+        if let videoDatagramStream {
+            return videoDatagramStream
+        }
+
+        let stream = AsyncThrowingStream<Data, Error> { continuation in
+            self.queue.async { [weak self] in
+                self?.videoDatagramContinuation = continuation
+            }
+            continuation.onTermination = { [weak self] _ in
+                self?.queue.async {
+                    self?.videoDatagramContinuation = nil
+                }
+            }
+        }
+
+        videoDatagramStream = stream
+        return stream
+    }
+
     public func send(_ message: ControlMessage) async throws {
-        guard let connection else {
+        guard let controlConnection else {
             throw TransportClientError.notConnected
         }
 
         do {
             let frame = try ControlMessageCodec.encodeFrame(message)
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                connection.send(content: frame, completion: .contentProcessed { error in
+                controlConnection.send(content: frame, completion: .contentProcessed { error in
                     if let error {
                         continuation.resume(throwing: TransportClientError.connectionFailed(String(describing: error)))
                     } else {
@@ -118,12 +191,17 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
     }
 
     public func close(reason: String?) async {
-        if let reason, connection != nil {
+        if let reason, controlConnection != nil {
             try? await send(.goodbye(reason: reason))
         }
-        connection?.cancel()
-        connection = nil
+
+        controlConnection?.cancel()
+        controlConnection = nil
+        connectionGroup?.cancel()
+        connectionGroup = nil
         framer.reset()
+        finishVideoDatagrams(error: nil)
+        videoDatagramStream = nil
     }
 
     private func receiveMessage() async throws -> ControlMessage {
@@ -142,12 +220,12 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
     }
 
     private func receiveChunk() async throws -> Data {
-        guard let connection else {
+        guard let controlConnection else {
             throw TransportClientError.notConnected
         }
 
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { content, _, isComplete, error in
+            controlConnection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { content, _, isComplete, error in
                 if let error {
                     continuation.resume(throwing: TransportClientError.connectionFailed(String(describing: error)))
                     return
@@ -163,11 +241,60 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         }
     }
 
+    private func handleGroupStateChange(_ state: NWConnectionGroup.State) {
+        switch state {
+        case .failed(let error):
+            finishVideoDatagrams(error: TransportClientError.connectionFailed(String(describing: error)))
+        case .cancelled:
+            finishVideoDatagrams(error: nil)
+        default:
+            break
+        }
+    }
+
+    private func handleControlStateChange(_ state: NWConnection.State) {
+        switch state {
+        case .failed(let error):
+            finishVideoDatagrams(error: TransportClientError.connectionFailed(String(describing: error)))
+        case .cancelled:
+            finishVideoDatagrams(error: nil)
+        default:
+            break
+        }
+    }
+
+    private func handleMediaDatagram(
+        content: Data?,
+        isComplete: Bool
+    ) {
+        guard let content, !content.isEmpty else {
+            if isComplete {
+                finishVideoDatagrams(error: nil)
+            }
+            return
+        }
+
+        videoDatagramContinuation?.yield(content)
+    }
+
+    private func finishVideoDatagrams(error: Error?) {
+        if let error {
+            videoDatagramContinuation?.finish(throwing: error)
+        } else {
+            videoDatagramContinuation?.finish()
+        }
+        videoDatagramContinuation = nil
+    }
+
     private static func makeParameters(
         configuration: TransportConfiguration,
         queue: DispatchQueue
     ) throws -> NWParameters {
         let quicOptions = NWProtocolQUIC.Options()
+        quicOptions.direction = .bidirectional
+        quicOptions.isDatagram = true
+        quicOptions.maxDatagramFrameSize = 65_535
+
         sec_protocol_options_add_tls_application_protocol(
             quicOptions.securityProtocolOptions,
             configuration.alpn
