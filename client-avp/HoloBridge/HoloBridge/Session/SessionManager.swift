@@ -280,14 +280,14 @@ public final class SessionManager {
         videoMonitorTask = Task { [weak self] in
             guard let self else { return }
 
-            await self.videoPipeline.prepareForStream()
+            self.videoPipeline.prepareForStream()
 
             do {
                 for try await datagram in datagrams {
                     if Task.isCancelled {
                         return
                     }
-                    await self.videoPipeline.consume(datagram: datagram)
+                    self.videoPipeline.consume(datagram: datagram)
                 }
 
                 if !Task.isCancelled {
@@ -336,7 +336,7 @@ public final class SessionManager {
         monitorTask = nil
         videoMonitorTask?.cancel()
         videoMonitorTask = nil
-        await videoPipeline.reset(statusMessage: "Waiting for stream")
+        videoPipeline.reset(statusMessage: "Waiting for stream")
 
         if wasUserInitiatedDisconnect {
             return
@@ -455,7 +455,7 @@ public final class SessionManager {
         monitorTask = nil
         videoMonitorTask?.cancel()
         videoMonitorTask = nil
-        await videoPipeline.reset(statusMessage: "Waiting for stream")
+        videoPipeline.reset(statusMessage: "Waiting for stream")
 
         guard let transport else {
             self.transport = nil

@@ -1,7 +1,9 @@
+import CoreMedia
 import Foundation
 import os
 
-actor VideoStreamPipeline {
+@MainActor
+final class VideoStreamPipeline {
     private let logger = Logger(subsystem: "HoloBridge", category: "VideoPipeline")
     private let renderer: VideoRenderer
     private var reassembler = H264VideoDatagramReassembler()
@@ -11,49 +13,40 @@ actor VideoStreamPipeline {
         self.renderer = renderer
         self.decoder = H264VideoDecoder(
             onFrameDecoded: { pixelBuffer in
-                Task { @MainActor in
-                    renderer.present(pixelBuffer: pixelBuffer)
-                }
+                renderer.present(pixelBuffer: pixelBuffer)
             },
             onFormatDescriptionUpdated: { dimensions in
-                Task { @MainActor in
-                    renderer.updateFormat(width: Int(dimensions.width), height: Int(dimensions.height))
-                }
+                renderer.updateFormat(
+                    width: Int(dimensions.width),
+                    height: Int(dimensions.height)
+                )
             },
             onIssue: { message in
-                Task { @MainActor in
-                    renderer.recordRecoverableIssue(message)
-                }
+                renderer.recordRecoverableIssue(message)
             }
         )
     }
 
-    func prepareForStream() async {
+    func prepareForStream() {
         reassembler = H264VideoDatagramReassembler()
         decoder.reset()
-        await MainActor.run {
-            renderer.prepareForStream()
-        }
+        renderer.prepareForStream()
     }
 
-    func consume(datagram: Data) async {
+    func consume(datagram: Data) {
         do {
             if let accessUnit = try reassembler.push(datagram: datagram) {
                 try decoder.decode(accessUnit: accessUnit)
             }
         } catch {
             logger.warning("Video datagram dropped: \(error.localizedDescription, privacy: .public)")
-            await MainActor.run {
-                renderer.recordRecoverableIssue(error.localizedDescription)
-            }
+            renderer.recordRecoverableIssue(error.localizedDescription)
         }
     }
 
-    func reset(statusMessage: String = "Waiting for stream") async {
+    func reset(statusMessage: String = "Waiting for stream") {
         reassembler = H264VideoDatagramReassembler()
         decoder.reset()
-        await MainActor.run {
-            renderer.reset(statusMessage: statusMessage)
-        }
+        renderer.reset(statusMessage: statusMessage)
     }
 }

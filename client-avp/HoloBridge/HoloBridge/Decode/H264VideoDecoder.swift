@@ -245,11 +245,11 @@ public final class H264VideoDecoder {
             }
         }
 
-        guard status == noErr, let typedFormatDescription = formatDescription as? CMVideoFormatDescription else {
+        guard status == noErr, let formatDescription else {
             throw H264VideoDecoderError.formatDescription(status)
         }
 
-        return typedFormatDescription
+        return formatDescription
     }
 
     private static func makeSampleBuffer(

@@ -65,6 +65,14 @@ public struct H264VideoDatagramReassembler: Sendable {
         let pts100ns: Int64
         let duration100ns: Int64
         let isKeyframe: Bool
+
+        func matchesFragmentMetadata(_ other: Header) -> Bool {
+            accessUnitID == other.accessUnitID
+                && fragmentCount == other.fragmentCount
+                && pts100ns == other.pts100ns
+                && duration100ns == other.duration100ns
+                && isKeyframe == other.isKeyframe
+        }
     }
 
     private struct IncompleteAccessUnit {
@@ -126,7 +134,7 @@ public struct H264VideoDatagramReassembler: Sendable {
             receivedFragments: 0
         )
 
-        guard entry.header == header else {
+        guard entry.header.matchesFragmentMetadata(header) else {
             throw H264VideoDatagramError.inconsistentFragmentMetadata(header.accessUnitID)
         }
 

@@ -14,6 +14,22 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
     private var videoDatagramStream: AsyncThrowingStream<Data, Error>?
     private var videoDatagramContinuation: AsyncThrowingStream<Data, Error>.Continuation?
 
+    private final class ResumeGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resumed = false
+
+        nonisolated func claim() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+
+            guard !resumed else {
+                return false
+            }
+            resumed = true
+            return true
+        }
+    }
+
     public init(
         configuration: TransportConfiguration,
         queue: DispatchQueue = DispatchQueue(label: "HoloBridge.Transport.NetworkFrameworkQuicClient")
@@ -48,24 +64,22 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         self.connectionGroup = group
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var didResume = false
+            let gate = ResumeGate()
 
             group.stateUpdateHandler = { [weak self] state in
-                self?.handleGroupStateChange(state)
-
-                guard !didResume else {
-                    return
+                Task { @MainActor [weak self] in
+                    self?.handleGroupStateChange(state)
                 }
 
                 switch state {
                 case .ready:
-                    didResume = true
-                    continuation.resume()
+                    guard gate.claim() else { return }
+                    continuation.resume(returning: ())
                 case .failed(let error):
-                    didResume = true
+                    guard gate.claim() else { return }
                     continuation.resume(throwing: TransportClientError.connectionFailed(String(describing: error)))
                 case .cancelled:
-                    didResume = true
+                    guard gate.claim() else { return }
                     continuation.resume(throwing: TransportClientError.connectionClosed)
                 default:
                     break
@@ -76,34 +90,36 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
                 maximumMessageSize: 65_536,
                 rejectOversizedMessages: true
             ) { [weak self] _, content, isComplete in
-                self?.handleMediaDatagram(content: content, isComplete: isComplete)
+                Task { @MainActor [weak self] in
+                    self?.handleMediaDatagram(content: content, isComplete: isComplete)
+                }
             }
 
             group.start(queue: self.queue)
         }
 
-        let controlConnection = NWConnection(from: group)
+        guard let controlConnection = NWConnection(from: group) else {
+            throw TransportClientError.connectionFailed("failed to derive a control connection from the QUIC connection group")
+        }
         self.controlConnection = controlConnection
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var didResume = false
+            let gate = ResumeGate()
 
             controlConnection.stateUpdateHandler = { [weak self] state in
-                self?.handleControlStateChange(state)
-
-                guard !didResume else {
-                    return
+                Task { @MainActor [weak self] in
+                    self?.handleControlStateChange(state)
                 }
 
                 switch state {
                 case .ready:
-                    didResume = true
-                    continuation.resume()
+                    guard gate.claim() else { return }
+                    continuation.resume(returning: ())
                 case .failed(let error):
-                    didResume = true
+                    guard gate.claim() else { return }
                     continuation.resume(throwing: TransportClientError.connectionFailed(String(describing: error)))
                 case .cancelled:
-                    didResume = true
+                    guard gate.claim() else { return }
                     continuation.resume(throwing: TransportClientError.connectionClosed)
                 default:
                     break
@@ -120,12 +136,10 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         }
 
         let stream = AsyncThrowingStream<Data, Error> { continuation in
-            self.queue.async { [weak self] in
-                self?.videoDatagramContinuation = continuation
-            }
+            self.videoDatagramContinuation = continuation
             continuation.onTermination = { [weak self] _ in
-                self?.queue.async {
-                    self?.videoDatagramContinuation = nil
+                Task { @MainActor in
+                    self?.clearVideoDatagramContinuation()
                 }
             }
         }
@@ -283,6 +297,10 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         } else {
             videoDatagramContinuation?.finish()
         }
+        videoDatagramContinuation = nil
+    }
+
+    private func clearVideoDatagramContinuation() {
         videoDatagramContinuation = nil
     }
 
