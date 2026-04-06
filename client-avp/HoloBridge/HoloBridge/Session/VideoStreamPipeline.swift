@@ -1,5 +1,6 @@
 import CoreMedia
 import Foundation
+import HoloBridgeClientCore
 import os
 
 @MainActor

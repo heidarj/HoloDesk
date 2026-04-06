@@ -53,13 +53,7 @@ public extension TransportClient {
         clientName: String = "holobridge-avp",
         capabilities: [String]? = nil
     ) async throws {
-        let resolvedCapabilities: [String]
-        if let capabilities {
-            resolvedCapabilities = capabilities
-        } else {
-            resolvedCapabilities = ["control-stream-v1"]
-        }
-
+        let resolvedCapabilities = capabilities ?? [ControlMessage.controlStreamCapability]
         try await send(
             ControlMessage.hello(
                 clientName: clientName,

@@ -1,3 +1,4 @@
+import HoloBridgeClientCore
 import SwiftUI
 
 struct ContentView: View {
@@ -196,8 +197,8 @@ struct ContentView: View {
         switch session.state {
         case .disconnected: return .gray
         case .connecting, .authenticating, .resuming: return .yellow
-        case .connected: return .green
-        case .error: return .red
+        case .connected(_): return .green
+        case .error(_): return .red
         }
     }
 }

@@ -3,7 +3,7 @@ import Foundation
 import Network
 import Security
 
-@available(visionOS 1.0, iOS 15.0, macOS 12.0, *)
+@available(visionOS 1.0, iOS 15.0, macOS 13.0, *)
 public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Sendable {
     public let configuration: TransportConfiguration
 
@@ -18,7 +18,7 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         private let lock = NSLock()
         private var resumed = false
 
-        nonisolated func claim() -> Bool {
+        func claim() -> Bool {
             lock.lock()
             defer { lock.unlock() }
 
@@ -67,9 +67,7 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
             let gate = ResumeGate()
 
             group.stateUpdateHandler = { [weak self] state in
-                Task { @MainActor [weak self] in
-                    self?.handleGroupStateChange(state)
-                }
+                self?.handleGroupStateChange(state)
 
                 switch state {
                 case .ready:
@@ -90,26 +88,30 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
                 maximumMessageSize: 65_536,
                 rejectOversizedMessages: true
             ) { [weak self] _, content, isComplete in
-                Task { @MainActor [weak self] in
-                    self?.handleMediaDatagram(content: content, isComplete: isComplete)
-                }
+                self?.handleMediaDatagram(content: content, isComplete: isComplete)
             }
 
             group.start(queue: self.queue)
         }
 
-        guard let controlConnection = NWConnection(from: group) else {
-            throw TransportClientError.connectionFailed("failed to derive a control connection from the QUIC connection group")
+        let streamOptions = Self.makeControlStreamOptions(configuration: configuration)
+        let streamEndpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host(configuration.host),
+            port: port
+        )
+        guard let controlConnection = group.extract(
+            connectionTo: streamEndpoint,
+            using: streamOptions
+        ) else {
+            throw TransportClientError.connectionFailed("failed to extract a bidirectional control stream from the QUIC connection group")
         }
         self.controlConnection = controlConnection
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let gate = ResumeGate()
 
-            controlConnection.stateUpdateHandler = { [weak self] state in
-                Task { @MainActor [weak self] in
-                    self?.handleControlStateChange(state)
-                }
+            controlConnection.stateUpdateHandler = { [weak self] (state: NWConnection.State) in
+                self?.handleControlStateChange(state)
 
                 switch state {
                 case .ready:
@@ -138,9 +140,7 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         let stream = AsyncThrowingStream<Data, Error> { continuation in
             self.videoDatagramContinuation = continuation
             continuation.onTermination = { [weak self] _ in
-                Task { @MainActor in
-                    self?.clearVideoDatagramContinuation()
-                }
+                self?.clearVideoDatagramContinuation()
             }
         }
 
@@ -356,6 +356,19 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         let parameters = NWParameters(quic: quicOptions)
         parameters.allowLocalEndpointReuse = true
         return parameters
+    }
+
+    private static func makeControlStreamOptions(
+        configuration: TransportConfiguration
+    ) -> NWProtocolQUIC.Options {
+        let quicOptions = NWProtocolQUIC.Options()
+        quicOptions.direction = .bidirectional
+        quicOptions.isDatagram = false
+        sec_protocol_options_add_tls_application_protocol(
+            quicOptions.securityProtocolOptions,
+            configuration.alpn
+        )
+        return quicOptions
     }
 
     private static func normalizeFingerprint(_ value: String) -> String {

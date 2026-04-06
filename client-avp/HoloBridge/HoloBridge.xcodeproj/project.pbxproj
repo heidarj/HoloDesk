@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C1D2E3012F90000000A00001 /* HoloBridgeClientCore in Frameworks */ = {isa = PBXBuildFile; productRef = C1D2E3032F90000000A00001 /* HoloBridgeClientCore */; };
+		C1D2E3022F90000000A00001 /* HoloBridgeClientTestAuth in Frameworks */ = {isa = PBXBuildFile; productRef = C1D2E3042F90000000A00001 /* HoloBridgeClientTestAuth */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +41,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C1D2E3012F90000000A00001 /* HoloBridgeClientCore in Frameworks */,
+				C1D2E3022F90000000A00001 /* HoloBridgeClientTestAuth in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -89,6 +93,8 @@
 			);
 			name = HoloBridge;
 			packageProductDependencies = (
+				C1D2E3032F90000000A00001 /* HoloBridgeClientCore */,
+				C1D2E3042F90000000A00001 /* HoloBridgeClientTestAuth */,
 			);
 			productName = HoloBridge;
 			productReference = B4E0CB8A2F805B1500ED398C /* HoloBridge.app */;
@@ -119,6 +125,7 @@
 			mainGroup = B4E0CB812F805B1500ED398C;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				C1D2E3052F90000000A00001 /* XCLocalSwiftPackageReference "Packages/HoloBridgeClient" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B4E0CB8B2F805B1500ED398C /* Products */;
@@ -355,6 +362,23 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		C1D2E3052F90000000A00001 /* XCLocalSwiftPackageReference "Packages/HoloBridgeClient" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/HoloBridgeClient;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C1D2E3032F90000000A00001 /* HoloBridgeClientCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HoloBridgeClientCore;
+		};
+		C1D2E3042F90000000A00001 /* HoloBridgeClientTestAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HoloBridgeClientTestAuth;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B4E0CB822F805B1500ED398C /* Project object */;
 }

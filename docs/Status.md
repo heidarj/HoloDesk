@@ -6,7 +6,7 @@
 
 **Milestone 6 – in progress**
 
-Milestones 1 through 5 are complete, and the Milestone 6 implementation has now landed in the repo. The Rust host can advertise `video-datagram-h264-v1`, start a per-connection video worker after auth or resume, fragment Annex-B H.264 access units over QUIC datagrams, and reassemble them in loopback tests. The canonical visionOS app target now has a best-effort QUIC tunnel receive path, H.264 datagram reassembly, VideoToolbox decode pipeline, and a Metal-backed flat video display surface, but Apple-side build/debug/runtime acceptance is deferred to a later Mac/AVP pass.
+Milestones 1 through 5 are complete, and the Milestone 6 implementation has now landed in the repo. The Rust host can advertise `video-datagram-h264-v1`, start a per-connection video worker after auth or resume, fragment Annex-B H.264 access units over QUIC datagrams, and reassemble them in loopback tests. The Apple client code is now split into a shared local Swift package plus a thinner visionOS shell, and the repo includes a new macOS smoke executable for fast auth/resume/datagram-loop debugging. However, end-to-end Apple-side QUIC media validation is still blocked by the current `Network.framework` QUIC datagram/runtime behavior on macOS and visionOS.
 
 ---
 
@@ -25,6 +25,11 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 
 ## Latest Changes
 
+- Extracted the Apple client transport/session/datagram code into a new local Swift package under `client-avp/HoloBridge/Packages/HoloBridgeClient`, with `HoloBridgeClientCore`, `HoloBridgeClientTestAuth`, and a headless `holobridge-client-smoke` executable target.
+- Added a shared `SessionClient` actor for `connect -> hello -> auth`, resume-token reuse, background control monitoring, and video datagram forwarding, while keeping Apple auth, decode, rendering, and SwiftUI state management in the visionOS app target.
+- Refactored the canonical visionOS app target to consume the shared package instead of the old app-local transport files, and deleted the duplicated app-local `ControlMessage`, `TransportConfiguration`, `TransportClient`, `NetworkFrameworkQuicClient`, and H.264 datagram reassembly sources.
+- Promoted the Rust transport crate’s synthetic video path from test-only helpers to runtime configuration via `HOLOBRIDGE_VIDEO_SOURCE=synthetic` and `HOLOBRIDGE_VIDEO_SYNTHETIC_PRESET=transport-loopback-v1`, so auth/resume/media transport can now be exercised on macOS without Windows capture/encode dependencies.
+- Added macOS smoke scripts `scripts/client-mac-smoke-local.sh` and `scripts/client-mac-smoke-remote.sh` to build the local Swift smoke executable, generate test keys, start a local Rust host in synthetic-video mode, and run a bounded auth/resume/media smoke pass.
 - Added Milestone 6 host transport/media support in `host/transport/`: `VideoStreamConfig`, QUIC datagram buffer configuration in the quinn transport config, the `video-datagram-h264-v1` capability, an H.264 media datagram header/packetizer/reassembler, and a per-connection video worker that starts only after successful auth or resume when the client advertises video support.
 - Reused the existing DXGI capture + Media Foundation encoder path inside the new host media worker and kept datagram sequencing connection-local so abrupt disconnects and resume recreate the video worker cleanly on the new QUIC connection.
 - Added a Windows-only `video_smoke_client` binary plus Milestone 6 workflow scripts: `host-video-build.ps1`, `host-video-test.ps1`, and `host-video-smoke.ps1`.
@@ -115,10 +120,14 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 
 ### Milestone 6
 
+- [x] `swift test --package-path client-avp/HoloBridge/Packages/HoloBridgeClient` passes on macOS for the extracted shared client package, including control-message codec tests, H.264 datagram reassembly tests, and `SessionClient` auth/resume behavior with mocked transports.
+- [x] `xcodebuild` still succeeds for both `generic/platform=visionOS Simulator` and `generic/platform=visionOS` after the visionOS app target was switched to the shared local Swift package.
+- [x] The repo now includes a local macOS smoke loop: `scripts/client-mac-smoke-local.sh` builds the Rust host, generates test keys, starts a synthetic-video host session, and launches the new `holobridge-client-smoke` executable.
 - [x] `cargo test -p holobridge-transport` passes on Windows after the Milestone 6 transport/media work, including 2 new loopback integration tests for video datagram startup and video restart after resume.
 - [x] `scripts/host-video-build.ps1` succeeds and builds `quic_server`, `video_smoke_client`, and `test_keygen`.
 - [x] The host transport now defaults video off, preserving Milestone 1-5 smoke behavior unless `HOLOBRIDGE_VIDEO_ENABLED=true` is set.
 - [x] Host loopback validation covers header encode/decode, fragmentation/reassembly, out-of-order fragments, incomplete-frame expiry, auth -> video datagram receive, and resume-triggered media restart on a new QUIC connection.
+- [ ] `scripts/client-mac-smoke-local.sh` currently fails at the Apple QUIC client transport stage on macOS before `hello`/`hello_ack` completes, even against the synthetic-video Rust host. The latest observed error after extracting the shared client core is `QUIC connection failed: POSIXErrorCode(rawValue: 50): Network is down`.
 - [ ] Native Windows `scripts/host-video-smoke.ps1` did not complete successfully in the current desktop session on 2026-04-05: `IDXGIOutput1::DuplicateOutput` failed with `0x80070005 (Access is denied)`, causing the host to close the QUIC connection before the smoke client received video datagrams.
 - [ ] `xcodebuild` validation for the canonical visionOS target has not been run from this Windows desktop. The app-side Milestone 6 implementation is best-effort and still requires a later Mac / Apple Vision Pro build-and-debug pass.
 
@@ -130,6 +139,7 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 - The Media Foundation backend currently selects the first compatible hardware H.264 MFT. There is no vendor-specific encoder selection or capability ranking yet.
 - Authorization is still effectively first-user bootstrap by default; there is no explicit admin flow yet for reviewing or pre-registering Apple `sub` values.
 - Resume state is memory-only on both sides in Milestone 3. If the host process or the app restarts, the user must authenticate again.
+- The new Apple shared client package is structurally in place and tested with mocked transports, but the real macOS/visionOS `Network.framework` QUIC media path is not yet accepted. The local smoke executable currently fails during real QUIC connection establishment against the Rust host, before auth or media delivery begins.
 - The Milestone 6 visionOS transport / decode / display path was authored best-effort from Windows and has not yet been compiled or debugged with Xcode on Mac hardware.
 - The current Windows desktop session used for Milestone 6 smoke validation did not grant DXGI Desktop Duplication access (`0x80070005`). A real local console session with duplication access is still required for native host video smoke acceptance.
 
@@ -137,7 +147,7 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 
 ## Next Recommended Step
 
-Re-run `scripts/host-video-smoke.ps1` from a Windows console session that has DXGI duplication access, then build/debug the canonical `client-avp/HoloBridge/HoloBridge` target with `xcodebuild` on a Mac / Apple Vision Pro to finish Milestone 6 acceptance.
+Use the new macOS smoke loop to finish isolating the Apple QUIC transport issue, then either bridge the Apple client to the Network.framework C API for QUIC datagrams or adopt a scoped fallback transport strategy for Apple-side real-time media. After that, re-run `scripts/host-video-smoke.ps1` from a Windows console session with DXGI duplication access and complete the AVP end-to-end Milestone 6 acceptance pass.
 
 ---
 

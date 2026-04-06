@@ -383,8 +383,7 @@ fn run_video_stream_worker(
     video_config: VideoStreamConfig,
     stop_requested: Arc<AtomicBool>,
 ) -> Result<(), TransportError> {
-    #[cfg(test)]
-    if let Some(synthetic_access_units) = video_config.synthetic_access_units.clone() {
+    if let Some(synthetic_access_units) = video_config.resolved_synthetic_access_units() {
         return run_synthetic_video_stream_worker(
             connection,
             &video_config,
@@ -465,7 +464,6 @@ fn run_video_stream_worker(
     Ok(())
 }
 
-#[cfg(test)]
 fn run_synthetic_video_stream_worker(
     connection: Connection,
     video_config: &VideoStreamConfig,
@@ -1144,7 +1142,7 @@ mod tests {
     use holobridge_auth::test_keys::{create_test_jwt, generate_test_rsa_keypair};
 
     use crate::{
-        config::SyntheticAccessUnit,
+        config::{SyntheticVideoPreset, VideoSource},
         media::{H264DatagramReassembler, ReassembledAccessUnit, ReassemblerConfig},
     };
 
@@ -1377,23 +1375,19 @@ mod tests {
     }
 
     fn test_video_payload() -> Vec<u8> {
-        (0..2_800u32)
-            .map(|index| ((index % 251) as u8).wrapping_add(1))
-            .collect()
+        SyntheticVideoPreset::TransportLoopbackV1
+            .build_access_units(60, 1)
+            .into_iter()
+            .next()
+            .expect("synthetic access unit")
+            .data
     }
 
     fn test_video_server_config(port: u16) -> TransportServerConfig {
         let mut config = test_server_config(port);
         config.video.enabled = true;
-        #[cfg(test)]
-        {
-            config.video.synthetic_access_units = Some(vec![SyntheticAccessUnit {
-                data: test_video_payload(),
-                is_keyframe: true,
-                pts_100ns: 166_666,
-                duration_100ns: 166_666,
-            }]);
-        }
+        config.video.source = VideoSource::SyntheticLoopback;
+        config.video.synthetic_preset = Some(SyntheticVideoPreset::TransportLoopbackV1);
         config
     }
 

@@ -118,9 +118,7 @@ public struct H264VideoDatagramReassembler: Sendable {
         }
 
         while incompleteAccessUnits.count >= config.maxInFlightAccessUnits {
-            guard
-                let oldest = incompleteAccessUnits.min(by: { $0.value.firstSeenAt < $1.value.firstSeenAt })
-            else {
+            guard let oldest = incompleteAccessUnits.min(by: { $0.value.firstSeenAt < $1.value.firstSeenAt }) else {
                 break
             }
             incompleteAccessUnits.removeValue(forKey: oldest.key)

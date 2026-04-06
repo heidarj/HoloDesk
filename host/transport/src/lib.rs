@@ -6,8 +6,8 @@ pub mod server;
 pub mod tls;
 
 pub use config::{
-    CertificateSource, DebugTlsSettings, TransportClientConfig, TransportServerConfig,
-    VideoStreamConfig,
+    CertificateSource, DebugTlsSettings, SyntheticAccessUnit, SyntheticVideoPreset,
+    TransportClientConfig, TransportServerConfig, VideoSource, VideoStreamConfig,
 };
 pub use connection::{CloseInitiator, ConnectionRole, ControlConnection, HandshakeAction};
 pub use media::{

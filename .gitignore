@@ -13,6 +13,7 @@ DerivedData/
 .swiftpm/
 
 # Smoke test output
+artifacts/
 *.h264
 
 # Local environment and temporary files

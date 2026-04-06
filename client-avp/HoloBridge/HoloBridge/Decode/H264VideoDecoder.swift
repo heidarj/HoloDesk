@@ -1,6 +1,7 @@
 import CoreMedia
 import CoreVideo
 import Foundation
+import HoloBridgeClientCore
 import VideoToolbox
 
 public enum H264VideoDecoderError: Error, LocalizedError {
