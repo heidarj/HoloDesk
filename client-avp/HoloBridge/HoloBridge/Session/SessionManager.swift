@@ -93,6 +93,11 @@ public final class SessionManager {
                 Task { @MainActor [weak self] in
                     self?.videoPipeline.consume(datagram: datagram)
                 }
+            },
+            onPointerShapeMessage: { [weak self] message in
+                Task { @MainActor [weak self] in
+                    self?.videoPipeline.consume(pointerShapeMessage: message)
+                }
             }
         )
     }

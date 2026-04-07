@@ -106,24 +106,29 @@ struct ContentView: View {
                         )
                     )
 
-                VideoDisplayView(renderer: session.videoRenderer)
-                    .padding(10)
+                GeometryReader { geometry in
+                    ZStack {
+                        VideoDisplayView(renderer: session.videoRenderer)
+                        pointerOverlay(in: geometry.size)
 
-                if session.videoRenderer.isAwaitingFrame {
-                    VStack(spacing: 10) {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                        Text(session.videoRenderer.statusMessage)
-                            .font(.headline)
-                        Text("The QUIC session is connected. Waiting for the first decoded H.264 frame.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 360)
+                        if session.videoRenderer.isAwaitingFrame {
+                            VStack(spacing: 10) {
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                Text(session.videoRenderer.statusMessage)
+                                    .font(.headline)
+                                Text("The QUIC session is connected. Waiting for the first decoded H.264 frame.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .frame(maxWidth: 360)
+                            }
+                            .padding(24)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+                        }
                     }
-                    .padding(24)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
                 }
+                .padding(10)
             }
             .frame(minWidth: 820, idealWidth: 920, maxWidth: 980, minHeight: 420, idealHeight: 520)
             .overlay(alignment: .topLeading) {
@@ -157,6 +162,34 @@ struct ContentView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    @ViewBuilder
+    private func pointerOverlay(in size: CGSize) -> some View {
+        if
+            let pointerImage = session.videoRenderer.pointerImage,
+            session.videoRenderer.pointerVisible,
+            session.videoRenderer.videoFrameWidth > 0,
+            session.videoRenderer.videoFrameHeight > 0
+        {
+            let scaleX = size.width / CGFloat(session.videoRenderer.videoFrameWidth)
+            let scaleY = size.height / CGFloat(session.videoRenderer.videoFrameHeight)
+            let displayWidth = max(CGFloat(session.videoRenderer.pointerWidth) * scaleX, 1)
+            let displayHeight = max(CGFloat(session.videoRenderer.pointerHeight) * scaleY, 1)
+            let centerX =
+                (CGFloat(session.videoRenderer.pointerX - session.videoRenderer.pointerHotspotX) * scaleX)
+                + (displayWidth / 2)
+            let centerY =
+                (CGFloat(session.videoRenderer.pointerY - session.videoRenderer.pointerHotspotY) * scaleY)
+                + (displayHeight / 2)
+
+            Image(uiImage: pointerImage)
+                .resizable()
+                .interpolation(.none)
+                .frame(width: displayWidth, height: displayHeight)
+                .position(x: centerX, y: centerY)
+                .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder

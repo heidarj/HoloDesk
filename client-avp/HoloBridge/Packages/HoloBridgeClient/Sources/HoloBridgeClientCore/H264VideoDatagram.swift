@@ -1,5 +1,79 @@
 import Foundation
 
+public struct PointerStateDatagram: Sendable, Equatable {
+    public let sequence: UInt64
+    public let x: Int32
+    public let y: Int32
+    public let visible: Bool
+
+    static let encodedLength = 24
+    private static let visibleFlag: UInt8 = 0x01
+
+    public static func decode(_ datagram: Data) throws -> PointerStateDatagram {
+        guard datagram.count >= encodedLength else {
+            throw MediaDatagramParseError.pointerDatagramTooShort(datagram.count)
+        }
+
+        return PointerStateDatagram(
+            sequence: datagram.readUInt64BigEndian(at: 4),
+            x: Int32(bitPattern: UInt32(datagram.readUInt32BigEndian(at: 12))),
+            y: Int32(bitPattern: UInt32(datagram.readUInt32BigEndian(at: 16))),
+            visible: (datagram[1] & visibleFlag) != 0
+        )
+    }
+}
+
+public enum MediaDatagram: Sendable, Equatable {
+    case video(Data)
+    case pointerState(PointerStateDatagram)
+}
+
+public enum MediaDatagramParseError: Error, LocalizedError, Sendable, Equatable {
+    case headerTooShort(Int)
+    case unsupportedVersion(UInt8)
+    case unexpectedPacketKind(UInt8)
+    case pointerDatagramTooShort(Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .headerTooShort(let actual):
+            return "Media datagram shorter than 3-byte discriminator: \(actual) bytes"
+        case .unsupportedVersion(let actual):
+            return "Unsupported media datagram version: \(actual)"
+        case .unexpectedPacketKind(let actual):
+            return "Unexpected media datagram packet kind: \(actual)"
+        case .pointerDatagramTooShort(let actual):
+            return "Pointer-state datagram shorter than 24-byte header: \(actual) bytes"
+        }
+    }
+}
+
+public enum MediaDatagramParser {
+    private static let version: UInt8 = 1
+    private static let videoKind: UInt8 = 0
+    private static let pointerStateKind: UInt8 = 1
+
+    public static func decode(_ datagram: Data) throws -> MediaDatagram {
+        guard datagram.count >= 3 else {
+            throw MediaDatagramParseError.headerTooShort(datagram.count)
+        }
+
+        let version = datagram[0]
+        guard version == Self.version else {
+            throw MediaDatagramParseError.unsupportedVersion(version)
+        }
+
+        switch datagram[2] {
+        case videoKind:
+            return .video(datagram)
+        case pointerStateKind:
+            return .pointerState(try PointerStateDatagram.decode(datagram))
+        default:
+            throw MediaDatagramParseError.unexpectedPacketKind(datagram[2])
+        }
+    }
+}
+
 public struct H264VideoAccessUnit: Sendable, Equatable {
     public let accessUnitID: UInt64
     public let data: Data
@@ -208,6 +282,13 @@ public struct H264VideoDatagramReassembler: Sendable {
 }
 
 private extension Data {
+    func readUInt32BigEndian(at offset: Int) -> UInt32 {
+        let range = offset..<(offset + 4)
+        return self[range].reduce(into: UInt32(0)) { partial, byte in
+            partial = (partial << 8) | UInt32(byte)
+        }
+    }
+
     func readUInt16BigEndian(at offset: Int) -> UInt16 {
         let range = offset..<(offset + 2)
         return self[range].reduce(into: UInt16(0)) { partial, byte in

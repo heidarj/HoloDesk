@@ -12,12 +12,15 @@ pub use config::{
 pub use connection::{CloseInitiator, ConnectionRole, ControlConnection, HandshakeAction};
 pub use media::{
     negotiated_datagram_payload_limit, H264DatagramPacketizer, H264DatagramReassembler,
-    MediaDatagramError, MediaDatagramHeader, ReassembledAccessUnit, ReassemblerConfig,
-    ReassemblerStats, MEDIA_DATAGRAM_HEADER_LEN, VIDEO_DATAGRAM_CAPABILITY,
+    MediaDatagramError, MediaDatagramHeader, PointerStateDatagram,
+    ReassembledAccessUnit, ReassemblerConfig, ReassemblerStats,
+    MEDIA_DATAGRAM_HEADER_LEN, POINTER_DATAGRAM_CAPABILITY,
+    VIDEO_DATAGRAM_CAPABILITY,
 };
 pub use protocol::{
     ControlMessage, ControlMessageCodec, FrameAccumulator, ProtocolError,
-    CONTROL_STREAM_CAPABILITY, DEFAULT_ALPN, PROTOCOL_VERSION,
+    CONTROL_STREAM_CAPABILITY, DEFAULT_ALPN, POINTER_STREAM_CAPABILITY,
+    PROTOCOL_VERSION,
 };
 pub use server::{
     ServerRuntimeSummary, SmokeClientRuntimeSummary, TransportError, TransportServer,

@@ -63,7 +63,6 @@ use windows::{
             MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO,
             MFTEnumEx, MF_VERSION, METransformDrainComplete,
             METransformHaveOutput, METransformNeedInput,
-            MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS,
             MF_EVENT_FLAG_NO_WAIT, CODECAPI_AVEncCommonMeanBitRate,
             CODECAPI_AVEncCommonRateControlMode,
             CODECAPI_AVEncMPVDefaultBPictureCount,
@@ -206,8 +205,11 @@ impl VideoEncoder for MfH264Encoder {
             self.input_needed,
         ));
 
+        let input_texture = frame.texture().ok_or(EncodeError::InvalidConfig(
+            "captured frame did not include a GPU texture for encode",
+        ))?;
         let convert_start = std::time::Instant::now();
-        let nv12_texture = self.color_converter.convert(frame.texture())?;
+        let nv12_texture = self.color_converter.convert(input_texture)?;
         let convert_ms = convert_start.elapsed().as_millis();
 
         let sample = create_input_sample(

@@ -405,6 +405,7 @@ dependencies = [
 name = "holobridge-transport"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "holobridge-auth",
  "holobridge-capture",
