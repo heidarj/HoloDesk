@@ -206,7 +206,10 @@ impl VideoEncoder for MfH264Encoder {
             self.input_needed,
         ));
 
+        let convert_start = std::time::Instant::now();
         let nv12_texture = self.color_converter.convert(frame.texture())?;
+        let convert_ms = convert_start.elapsed().as_millis();
+
         let sample = create_input_sample(
             &nv12_texture,
             self.next_pts_100ns,
@@ -217,6 +220,7 @@ impl VideoEncoder for MfH264Encoder {
             .saturating_add(self.frame_duration_100ns);
 
         let mut encoded = Vec::new();
+        let input_start = std::time::Instant::now();
         loop {
             match unsafe { self.transform.ProcessInput(INPUT_STREAM_ID, &sample, 0) } {
                 Ok(()) => {
@@ -249,8 +253,20 @@ impl VideoEncoder for MfH264Encoder {
                 }
             }
         }
+        let input_ms = input_start.elapsed().as_millis();
 
+        let drain_start = std::time::Instant::now();
         encoded.extend(self.drain_available_output(false)?);
+        let drain_ms = drain_start.elapsed().as_millis();
+
+        // Log slow encode steps at warning level so they appear in normal output
+        if convert_ms > 50 || input_ms > 50 || drain_ms > 50 {
+            eprintln!(
+                "[encode] slow frame: convert={}ms input={}ms drain={}ms",
+                convert_ms, input_ms, drain_ms,
+            );
+        }
+
         Ok(encoded)
     }
 
@@ -269,6 +285,14 @@ impl VideoEncoder for MfH264Encoder {
         } else {
             self.flush_sync()
         }
+    }
+
+    fn abort_handle(&self) -> Option<crate::EncoderAbortHandle> {
+        Some(crate::EncoderAbortHandle {
+            inner: Some(crate::EncoderAbortHandleInner {
+                transform: self.transform.clone(),
+            }),
+        })
     }
 }
 

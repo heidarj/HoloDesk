@@ -200,6 +200,10 @@ pub trait CaptureSession {
     /// Number of times the session recovered from access-lost errors.
     fn access_lost_recoveries(&self) -> u32 { 0 }
 
+    /// Check whether the underlying D3D device is still healthy.
+    /// Returns `Ok(())` if the device is fine, or a descriptive error string.
+    fn check_device_health(&self) -> Result<(), String> { Ok(()) }
+
     #[cfg(windows)]
     fn d3d11_device(&self) -> ID3D11Device;
 }

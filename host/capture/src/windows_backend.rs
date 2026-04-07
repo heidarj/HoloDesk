@@ -78,11 +78,13 @@ impl CaptureBackend for DxgiCaptureBackend {
 
         let device = create_device_for_adapter(&selected.adapter)?;
 
-        // Retry DuplicateOutput up to 10 times (over ~2 s) to handle transient
+        // Retry DuplicateOutput up to 30 times (over ~30 s) to handle transient
         // failures such as E_INVALIDARG after a previous capture session was
-        // abandoned while stuck, or ACCESS_LOST during a DWM transition.
+        // abandoned while stuck in a GPU call, or ACCESS_LOST during a DWM
+        // transition.  The long retry window gives the abandoned worker time to
+        // exit after the MFT abort flush or Windows TDR kicks in.
         let mut duplication = None;
-        for attempt in 0..10 {
+        for attempt in 0..30 {
             match unsafe { selected.output.DuplicateOutput(&device) } {
                 Ok(dup) => {
                     if attempt > 0 {
@@ -98,9 +100,15 @@ impl CaptureBackend for DxgiCaptureBackend {
                         error.code().0 as u32,
                         error.message()
                     );
-                    if attempt < 9 {
-                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    if attempt < 29 {
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
                     } else {
+                        eprintln!(
+                            "[capture] DuplicateOutput failed after 30 attempts.  \
+                             A previous capture worker may still be stuck in a GPU call.  \
+                             Check Windows TDR settings: TdrLevel and TdrDelay in \
+                             HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers."
+                        );
                         return Err(map_duplication_error("IDXGIOutput1::DuplicateOutput", error));
                     }
                 }
@@ -222,6 +230,19 @@ impl CaptureSession for DxgiCaptureSession {
 
     fn access_lost_recoveries(&self) -> u32 {
         self.access_lost_recoveries
+    }
+
+    fn check_device_health(&self) -> Result<(), String> {
+        let hr = unsafe { self.device.GetDeviceRemovedReason() };
+        if let Err(error) = hr {
+            Err(format!(
+                "D3D device removed: 0x{:08x} {}",
+                error.code().0 as u32,
+                error.message()
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 

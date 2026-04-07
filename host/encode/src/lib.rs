@@ -140,6 +140,78 @@ pub trait VideoEncoder {
     ) -> Result<Vec<EncodedAccessUnit>, EncodeError>;
 
     fn flush(&mut self) -> Result<Vec<EncodedAccessUnit>, EncodeError>;
+
+    /// Return a thread-safe handle that can abort a blocked encoder from
+    /// another thread.  Returns `None` on platforms that do not support it.
+    fn abort_handle(&self) -> Option<EncoderAbortHandle> {
+        None
+    }
+}
+
+/// Thread-safe handle used to force-flush a hardware MFT from outside the
+/// encoder's owning thread.  Sending `MFT_MESSAGE_COMMAND_FLUSH` unblocks
+/// a `ProcessInput` / `ProcessOutput` call that is stuck waiting for the GPU.
+#[derive(Clone)]
+pub struct EncoderAbortHandle {
+    #[cfg(windows)]
+    inner: Option<EncoderAbortHandleInner>,
+    #[cfg(not(windows))]
+    _unused: (),
+}
+
+#[cfg(windows)]
+#[derive(Clone)]
+struct EncoderAbortHandleInner {
+    transform: windows::Win32::Media::MediaFoundation::IMFTransform,
+}
+
+// IMFTransform is free-threaded (Send + Sync in the windows crate).
+#[cfg(windows)]
+unsafe impl Send for EncoderAbortHandle {}
+#[cfg(windows)]
+unsafe impl Sync for EncoderAbortHandle {}
+#[cfg(not(windows))]
+unsafe impl Send for EncoderAbortHandle {}
+#[cfg(not(windows))]
+unsafe impl Sync for EncoderAbortHandle {}
+
+impl EncoderAbortHandle {
+    /// Create a no-op handle (non-Windows).
+    #[cfg(not(windows))]
+    pub fn noop() -> Self {
+        Self { _unused: () }
+    }
+
+    /// Attempt to unstick the hardware encoder by sending flush and shutdown
+    /// commands.  Called from a different thread than the one that owns the
+    /// encoder.  We send multiple messages to maximise the chance of unblocking
+    /// a stuck `ProcessInput` / `ProcessOutput` call.
+    pub fn abort(&self) {
+        #[cfg(windows)]
+        if let Some(inner) = &self.inner {
+            // COMMAND_FLUSH: discard all pending input and output.
+            let _ = unsafe {
+                inner.transform.ProcessMessage(
+                    windows::Win32::Media::MediaFoundation::MFT_MESSAGE_COMMAND_FLUSH,
+                    0,
+                )
+            };
+            // NOTIFY_END_OF_STREAM: signal no more input is coming.
+            let _ = unsafe {
+                inner.transform.ProcessMessage(
+                    windows::Win32::Media::MediaFoundation::MFT_MESSAGE_NOTIFY_END_OF_STREAM,
+                    0,
+                )
+            };
+            // NOTIFY_END_STREAMING: transition MFT to idle state.
+            let _ = unsafe {
+                inner.transform.ProcessMessage(
+                    windows::Win32::Media::MediaFoundation::MFT_MESSAGE_NOTIFY_END_STREAMING,
+                    0,
+                )
+            };
+        }
+    }
 }
 
 #[derive(Debug)]

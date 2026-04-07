@@ -14,8 +14,8 @@ use holobridge_capture::{
     DxgiCaptureBackend,
 };
 use holobridge_encode::{
-    recommended_bitrate_bps, EncodeError, EncodedAccessUnit, MfH264Encoder, VideoEncoder,
-    VideoEncoderConfig,
+    recommended_bitrate_bps, EncodeError, EncodedAccessUnit, EncoderAbortHandle, MfH264Encoder,
+    VideoEncoder, VideoEncoderConfig,
 };
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use tokio::{task::JoinHandle, time::{sleep, timeout}};
@@ -95,6 +95,7 @@ const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct ActiveVideoStream {
     stop_requested: Arc<AtomicBool>,
+    abort_handle: Arc<std::sync::Mutex<Option<EncoderAbortHandle>>>,
     monitor_handle: JoinHandle<()>,
 }
 
@@ -313,16 +314,31 @@ impl TransportSmokeClient {
 impl ActiveVideoStream {
     fn stop(&self) {
         self.stop_requested.store(true, Ordering::Relaxed);
+        // Try to unstick a blocked hardware encoder by sending MFT flush +
+        // shutdown messages.  This is safe to call from any thread because
+        // IMFTransform is free-threaded.
+        if let Some(handle) = self.abort_handle.lock().unwrap().as_ref() {
+            info!("host video: sending MFT abort (FLUSH + END_STREAMING)");
+            handle.abort();
+        }
     }
 
     async fn join(self) {
-        // Give the worker thread up to 5 seconds to stop.  If it is stuck in a
-        // blocking call (e.g. encoder GetEvent / acquire_frame) we must not
-        // block the accept loop forever.
-        match timeout(Duration::from_secs(5), self.monitor_handle).await {
-            Ok(_) => {}
+        // Give the worker thread up to 30 seconds to stop.  The MFT abort
+        // should unstick most ProcessInput/ProcessOutput blocks; after that
+        // Windows TDR (typically 2 s) should reset the GPU and unblock
+        // VideoProcessorBlt.  We keep the timeout generous so the
+        // DuplicateOutput retry on the next session has the best chance
+        // of succeeding.
+        match timeout(Duration::from_secs(30), self.monitor_handle).await {
+            Ok(_) => {
+                info!("host video: worker joined successfully");
+            }
             Err(_) => {
-                warn!("host video: worker did not stop within 5 s — abandoning");
+                warn!(
+                    "host video: worker did not stop within 30 s — abandoning.  \
+                     The next DuplicateOutput call will retry for up to 30 s."
+                );
             }
         }
     }
@@ -347,12 +363,21 @@ fn start_video_stream(
     );
 
     let stop_requested = Arc::new(AtomicBool::new(false));
+    let abort_handle: Arc<std::sync::Mutex<Option<EncoderAbortHandle>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
     let stop_for_worker = Arc::clone(&stop_requested);
     let stop_for_monitor = Arc::clone(&stop_requested);
+    let abort_for_worker = Arc::clone(&abort_handle);
     let connection_for_worker = connection.clone();
     let connection_for_monitor = connection.clone();
     let worker = tokio::task::spawn_blocking(move || {
-        run_video_stream_worker(connection_for_worker, video_config, stop_for_worker)
+        run_video_stream_worker(
+            connection_for_worker,
+            video_config,
+            stop_for_worker,
+            abort_for_worker,
+        )
     });
     let monitor_handle = tokio::spawn(async move {
         match worker.await {
@@ -384,6 +409,7 @@ fn start_video_stream(
 
     Ok(ActiveVideoStream {
         stop_requested,
+        abort_handle,
         monitor_handle,
     })
 }
@@ -392,6 +418,7 @@ fn run_video_stream_worker(
     connection: Connection,
     video_config: VideoStreamConfig,
     stop_requested: Arc<AtomicBool>,
+    abort_slot: Arc<std::sync::Mutex<Option<EncoderAbortHandle>>>,
 ) -> Result<(), TransportError> {
     if let Some(synthetic_access_units) = video_config.resolved_synthetic_access_units() {
         return run_synthetic_video_stream_worker(
@@ -450,6 +477,10 @@ fn run_video_stream_worker(
     let mut encoder =
         MfH264Encoder::new(encoder_config).map_err(TransportError::Encode)?;
 
+    // Publish the abort handle so the server can flush the MFT from outside
+    // if the worker gets stuck in a blocking GPU/MFT call.
+    *abort_slot.lock().unwrap() = encoder.abort_handle();
+
     let mut packetizer = H264DatagramPacketizer::default();
     let mut frames_sent: u64 = 0;
     let mut last_frame_time = Instant::now();
@@ -506,13 +537,26 @@ fn run_video_stream_worker(
             last_recoveries = recoveries;
         }
 
+        // Bail immediately if the D3D device is in a bad state, rather than
+        // blocking forever in a GPU call.
+        if let Err(reason) = capture.check_device_health() {
+            warn!(reason = %reason, frames_sent, "host video: D3D device unhealthy");
+            return Err(TransportError::Runtime(reason));
+        }
+
+        let encode_start = Instant::now();
         let access_units = match encoder.encode(&frame) {
             Ok(aus) => aus,
             Err(error) => {
-                warn!(error = %error, frames_sent, "host video: encode error");
+                let encode_ms = encode_start.elapsed().as_millis();
+                warn!(error = %error, frames_sent, encode_ms, "host video: encode error");
                 return Err(TransportError::Encode(error));
             }
         };
+        let encode_ms = encode_start.elapsed().as_millis();
+        if encode_ms > 50 {
+            warn!(encode_ms, frames_sent, "host video: slow encode");
+        }
 
         if let Err(error) = send_encoded_access_units(
             &connection,
