@@ -50,7 +50,11 @@ final class VideoStreamPipeline {
                 }
             case .pointerState(let pointerState):
                 pointerDatagramsReceived &+= 1
-                renderer.updatePointerState(pointerState)
+                renderer.updatePointerState(
+                    x: pointerState.x,
+                    y: pointerState.y,
+                    visible: pointerState.visible
+                )
             }
         } catch {
             datagramErrors += 1

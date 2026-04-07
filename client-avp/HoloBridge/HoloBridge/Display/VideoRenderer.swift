@@ -60,10 +60,10 @@ public final class VideoRenderer {
         framesPresented &+= 1
     }
 
-    public func updatePointerState(_ pointerState: PointerStateDatagram) {
-        pointerVisible = pointerState.visible
-        pointerX = Int(pointerState.x)
-        pointerY = Int(pointerState.y)
+    public func updatePointerState(x: Int32, y: Int32, visible: Bool) {
+        pointerVisible = visible
+        pointerX = Int(x)
+        pointerY = Int(y)
     }
 
     public func updatePointerShape(
