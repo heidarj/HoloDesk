@@ -149,6 +149,9 @@ struct VideoWorkerTelemetry {
     frames_sent: u64,
     pointer_only_updates: u64,
     image_updates: u64,
+    consecutive_wait_timeouts: u64,
+    max_consecutive_wait_timeouts: u64,
+    last_update_kind: &'static str,
     access_lost_recoveries: u32,
     last_hresult: Option<String>,
     stall_action_taken: bool,
@@ -164,6 +167,9 @@ impl VideoWorkerTelemetry {
             frames_sent: 0,
             pointer_only_updates: 0,
             image_updates: 0,
+            consecutive_wait_timeouts: 0,
+            max_consecutive_wait_timeouts: 0,
+            last_update_kind: "none",
             access_lost_recoveries: 0,
             last_hresult: None,
             stall_action_taken: false,
@@ -196,6 +202,13 @@ impl VideoWorkerTelemetry {
         if plan.image_update {
             self.image_updates = self.image_updates.saturating_add(1);
         }
+        self.consecutive_wait_timeouts = 0;
+        self.last_update_kind = match (plan.image_update, plan.send_pointer_state) {
+            (true, false) => "image_only",
+            (false, true) => "pointer_only",
+            (true, true) => "image_and_pointer",
+            (false, false) => "none",
+        };
         self.last_successful_frame_at = Instant::now();
     }
 
@@ -208,6 +221,14 @@ impl VideoWorkerTelemetry {
 
     fn clear_hresult(&mut self) {
         self.last_hresult = None;
+    }
+
+    fn note_wait_timeout(&mut self) {
+        self.consecutive_wait_timeouts =
+            self.consecutive_wait_timeouts.saturating_add(1);
+        self.max_consecutive_wait_timeouts = self
+            .max_consecutive_wait_timeouts
+            .max(self.consecutive_wait_timeouts);
     }
 }
 
@@ -667,6 +688,7 @@ fn run_video_stream_worker(
         let mut packetizer = H264DatagramPacketizer::default();
         let mut last_recoveries: u32 = 0;
         let mut pointer_sequence: u64 = 1;
+        let mut last_streaming_log_frames_sent: u64 = 0;
 
         send_frame_update(
             &connection,
@@ -686,6 +708,14 @@ fn run_video_stream_worker(
             let frame = match capture.acquire_frame() {
                 Ok(Some(frame)) => frame,
                 Ok(None) => {
+                    let consecutive_wait_timeouts = note_video_wait_timeout(&telemetry);
+                    if consecutive_wait_timeouts == 1
+                        || consecutive_wait_timeouts % 120 == 0
+                    {
+                        trace_video(format!(
+                            "AcquireNextFrame timeout consecutive_wait_timeouts={consecutive_wait_timeouts}"
+                        ));
+                    }
                     let recoveries = capture.access_lost_recoveries();
                     if recoveries != last_recoveries {
                         info!(
@@ -727,8 +757,12 @@ fn run_video_stream_worker(
             )?;
 
             let frames_sent = current_video_frames_sent(&telemetry);
-            if frames_sent > 0 && frames_sent % 60 == 0 {
+            if frames_sent > 0
+                && frames_sent % 60 == 0
+                && frames_sent != last_streaming_log_frames_sent
+            {
                 info!(frames_sent, "host video: streaming");
+                last_streaming_log_frames_sent = frames_sent;
             }
         }
 
@@ -1086,6 +1120,9 @@ fn spawn_video_worker_watchdog(
                     frames_sent,
                     pointer_only_updates,
                     image_updates,
+                    consecutive_wait_timeouts,
+                    max_consecutive_wait_timeouts,
+                    last_update_kind,
                     access_lost_recoveries,
                     last_hresult,
                     stall_action_taken,
@@ -1098,6 +1135,9 @@ fn spawn_video_worker_watchdog(
                         state.frames_sent,
                         state.pointer_only_updates,
                         state.image_updates,
+                        state.consecutive_wait_timeouts,
+                        state.max_consecutive_wait_timeouts,
+                        state.last_update_kind,
                         state.access_lost_recoveries,
                         state.last_hresult.clone(),
                         state.stall_action_taken,
@@ -1116,6 +1156,9 @@ fn spawn_video_worker_watchdog(
                         frames_sent,
                         pointer_only_updates,
                         image_updates,
+                        consecutive_wait_timeouts,
+                        max_consecutive_wait_timeouts,
+                        last_update_kind,
                         access_lost_recoveries,
                         last_hresult = last_hresult.as_deref().unwrap_or("none"),
                         "host video: worker heartbeat"
@@ -1207,6 +1250,14 @@ fn current_pointer_only_updates(
     telemetry: &Arc<std::sync::Mutex<VideoWorkerTelemetry>>,
 ) -> u64 {
     telemetry.lock().unwrap().pointer_only_updates
+}
+
+fn note_video_wait_timeout(
+    telemetry: &Arc<std::sync::Mutex<VideoWorkerTelemetry>>,
+) -> u64 {
+    let mut state = telemetry.lock().unwrap();
+    state.note_wait_timeout();
+    state.consecutive_wait_timeouts
 }
 
 fn trace_video(message: impl AsRef<str>) {

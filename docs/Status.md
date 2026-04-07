@@ -25,6 +25,7 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 
 ## Latest Changes
 
+- Updated `scripts/e2e.ps1` so normal runs keep standard host logging while `.\scripts\e2e.ps1 -Verbose` enables the deep capture/video/encode trace path, panic backtraces, and a timestamped host log under `artifacts/e2e/`.
 - Added pointer-aware DXGI capture metadata on the host: capture frames now distinguish image-only, pointer-only, and combined updates, and include pointer position plus optional pointer-shape payloads.
 - Added a host-side pointer overlay transport path: pointer position/visibility now travels as a lightweight QUIC datagram, pointer-shape changes travel as reliable control messages, and pointer-only desktop duplication updates no longer have to traverse the H.264 encoder when the client negotiated pointer overlay support.
 - Added stage-aware video worker telemetry and a watchdog in `host/transport/` that tracks the current capture/encode/send stage, logs periodic heartbeats, records the last HRESULT/detail, and closes the active stream loudly if the worker wedges instead of silently stopping frame delivery.
@@ -126,6 +127,8 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 
 ### Milestone 6
 
+- [x] Real Windows host + Apple Vision Pro validation on 2026-04-07 confirmed that the stream no longer stalls during active desktop interaction; pointer movement stayed synchronized through the new overlay path and the host continued streaming reliably under continuous mouse movement and clicking.
+- [x] `scripts/e2e.ps1` now supports both quiet and deep-debug runs from the Windows host workflow, with `-Verbose` enabling capture/video/encode traces plus a timestamped host log artifact.
 - [x] `cargo test -q -p holobridge-transport` passes on this Windows host after the pointer-overlay stability work, including the new pointer-shape/control-message and pointer-only dispatch coverage.
 - [x] `cargo test -q` passes across the Rust host workspace after the pointer-overlay stability work.
 - [ ] `swift test --package-path client-avp/HoloBridge/Packages/HoloBridgeClient` could not be re-run from this Windows desktop on 2026-04-07 because the `swift` toolchain is not installed here.
@@ -159,7 +162,7 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 
 ## Next Recommended Step
 
-Run a real Windows-host / Apple Vision Pro manual pass with `HOLOBRIDGE_CAPTURE_TRACE=1`, `HOLOBRIDGE_VIDEO_TRACE=1`, and optionally `HOLOBRIDGE_ENCODE_TRACE=1`, then stress the stream with continuous mouse motion, clicking, dragging, and window switching. Confirm that pointer-only activity keeps the cursor overlay in sync without stalling the host video worker, and use the resulting logs to decide whether the next pass should target residual masked-cursor fidelity or reconnect cleanup.
+Now that the stream is stable under real AVP interaction, use the quieter default `scripts/e2e.ps1` path for day-to-day validation and reserve `.\scripts\e2e.ps1 -Verbose` for regressions. The next engineering pass should focus on cursor-shape edge cases such as masked-color fidelity and then decide whether reconnect cleanup or additional client-side diagnostics is the better follow-up milestone.
 
 ---
 
