@@ -349,20 +349,22 @@ fn start_video_stream(
     let monitor_handle = tokio::spawn(async move {
         match worker.await {
             Ok(Ok(())) => {
-                info!("host video stream worker stopped");
+                info!("host video stream worker stopped gracefully");
             }
             Ok(Err(error)) => {
                 if !stop_for_monitor.load(Ordering::Relaxed) {
-                    warn!(error = %error, "host video stream worker failed");
+                    warn!(error = %error, "host video stream worker failed — closing connection");
                     connection_for_monitor.close(
                         quinn::VarInt::from_u32(1),
                         b"video-stream-worker-failed",
                     );
+                } else {
+                    info!(error = %error, "host video stream worker ended after stop");
                 }
             }
             Err(error) => {
                 if !stop_for_monitor.load(Ordering::Relaxed) {
-                    warn!(error = %error, "host video stream worker panicked");
+                    warn!(error = %error, "host video stream worker panicked — closing connection");
                     connection_for_monitor.close(
                         quinn::VarInt::from_u32(1),
                         b"video-stream-worker-panicked",
@@ -441,12 +443,15 @@ fn run_video_stream_worker(
         MfH264Encoder::new(encoder_config).map_err(TransportError::Encode)?;
 
     let mut packetizer = H264DatagramPacketizer::default();
+    let mut frames_sent: u64 = 0;
     send_encoded_access_units(
         &connection,
         &video_config,
         &mut packetizer,
         encoder.encode(&first_frame).map_err(TransportError::Encode)?,
     )?;
+    frames_sent += 1;
+    info!(frames_sent, "host video: first frame sent");
 
     while !stop_requested.load(Ordering::Relaxed) {
         let Some(frame) = capture.acquire_frame().map_err(TransportError::Capture)? else {
@@ -459,8 +464,13 @@ fn run_video_stream_worker(
             &mut packetizer,
             access_units,
         )?;
+        frames_sent += 1;
+        if frames_sent % 60 == 0 {
+            info!(frames_sent, "host video: streaming");
+        }
     }
 
+    info!(frames_sent, "host video: worker stopped normally");
     Ok(())
 }
 
@@ -511,13 +521,21 @@ fn send_encoded_access_units(
     access_units: Vec<EncodedAccessUnit>,
 ) -> Result<(), TransportError> {
     for access_unit in access_units {
-        let Some(payload_limit) = negotiated_datagram_payload_limit(
+        let payload_limit = match negotiated_datagram_payload_limit(
             connection.max_datagram_size(),
             video_config.datagram_payload_cap_bytes,
-        ) else {
-            return Err(TransportError::Runtime(
-                "peer does not currently accept QUIC datagrams".to_owned(),
-            ));
+        ) {
+            Some(limit) => limit,
+            None => {
+                // Transient: peer max datagram size temporarily unavailable or too
+                // small.  Drop this frame rather than killing the video worker.
+                warn!(
+                    pts_100ns = access_unit.pts_100ns,
+                    max_dg = ?connection.max_datagram_size(),
+                    "dropping frame: datagram payload limit unavailable"
+                );
+                continue;
+            }
         };
 
         let datagrams = packetizer
@@ -544,6 +562,7 @@ fn send_encoded_access_units(
                     break;
                 }
                 Err(quinn::SendDatagramError::ConnectionLost(error)) => {
+                    warn!(error = %error, "video datagram send: connection lost");
                     return Err(TransportError::Quinn(error))
                 }
             }

@@ -64,14 +64,22 @@ public final class SessionManager {
                 NetworkFrameworkQuicClient(
                     configuration: configuration,
                     diagnosticHandler: { event in
+                        // Suppress per-datagram/per-payload noise
+                        switch event.kind {
+                        case .datagramReceived, .controlPayloadReceived, .controlPayloadSent:
+                            return
+                        default:
+                            break
+                        }
                         let detail = event.detail ?? "-"
-                        logger.debug("transport event \(event.kind.rawValue, privacy: .public) detail=\(detail, privacy: .public)")
+                        logger.info("transport: \(event.kind.rawValue, privacy: .public) \(detail, privacy: .public)")
                     }
                 )
             },
             onStateChange: { [weak self] newState in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    self.logger.info("session state: \(String(describing: newState), privacy: .public)")
                     self.state = newState
                     switch newState {
                     case .connected:

@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import os
 
 final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Sendable {
     var onEvent: ((QuicBridgeEvent) -> Void)?
@@ -8,6 +9,7 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Senda
     var onTermination: ((Error?) -> Void)?
 
     private let configuration: TransportConfiguration
+    private let logger = Logger(subsystem: "HoloBridge", category: "QuicBridge")
     private var connectionTask: Task<Void, Never>?
     private var controlSendContinuation: AsyncStream<SendRequest>.Continuation?
     private var datagramSendContinuation: AsyncStream<SendRequest>.Continuation?
@@ -81,12 +83,15 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Senda
                                         self.emitEvent(.controlPayloadReceived, detail: "\(message.content.count)")
                                         self.onControlPayload?(message.content)
                                     }
-                                    if message.metadata.endOfStream { break }
+                                    if message.metadata.endOfStream {
+                                        self?.logger.info("control stream: server sent endOfStream")
+                                        break
+                                    }
                                 }
                             } catch is CancellationError {
                                 // Expected on close
                             } catch {
-                                // Control stream read failed — notify but keep datagrams alive
+                                self?.logger.error("control stream read error: \(error.localizedDescription, privacy: .public)")
                                 self?.onTermination?(error)
                             }
                             // Suspend until group is cancelled, so this task
@@ -110,6 +115,7 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Senda
                             } catch is CancellationError {
                                 // Expected on close
                             } catch {
+                                self?.logger.error("datagram receive error: \(error.localizedDescription, privacy: .public)")
                                 self?.onTermination?(error)
                             }
                             while !Task.isCancelled {
@@ -155,9 +161,11 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Senda
                 }
 
                 self?.emitEvent(.closeCompleted)
+                self?.logger.info("QUIC connection closed normally")
                 self?.onTermination?(nil)
             } catch {
                 guard let self else { return }
+                self.logger.error("QUIC connection failed: \(error.localizedDescription, privacy: .public)")
                 if !self.didCompleteStart {
                     completion(error)
                 }
