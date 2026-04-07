@@ -201,6 +201,60 @@ final class SessionClientTests: XCTestCase {
         try await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(received.withLock { $0 }, [Data([1, 2, 3])])
     }
+
+    func testPointerShapeMessagesAreForwardedPostConnect() async throws {
+        let transport = MockTransportClient()
+        transport.enqueueIncoming(.helloAck())
+        transport.enqueueIncoming(
+            .authResult(
+                success: true,
+                message: "authenticated",
+                sessionID: "session-1",
+                resumeToken: "resume-1",
+                resumeTokenTTLSeconds: 3600
+            )
+        )
+
+        let received = Locked<[ControlMessage]>([])
+        let client = SessionClient(
+            transportClientFactory: { _ in transport },
+            onPointerShapeMessage: { message in
+                received.withLock { $0.append(message) }
+            }
+        )
+
+        _ = try await client.connect(
+            to: SessionEndpoint(host: "127.0.0.1", port: 4433),
+            identityTokenSupplier: { "token" },
+            requestVideo: true
+        )
+
+        transport.enqueueIncoming(
+            .pointerShape(
+                shapeKind: "color",
+                width: 16,
+                height: 16,
+                hotspotX: 2,
+                hotspotY: 3,
+                pixelsRGBABase64: "AQIDBA=="
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(
+            received.withLock { $0 },
+            [
+                .pointerShape(
+                    shapeKind: "color",
+                    width: 16,
+                    height: 16,
+                    hotspotX: 2,
+                    hotspotY: 3,
+                    pixelsRGBABase64: "AQIDBA=="
+                )
+            ]
+        )
+    }
 }
 
 private final class MockTransportFactory: @unchecked Sendable {

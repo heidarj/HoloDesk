@@ -151,6 +151,82 @@ pub struct FrameMetadata {
     pub height: u32,
     pub accumulated_frames: u32,
     pub last_present_qpc: i64,
+    pub update_kind: FrameUpdateKind,
+    pub pointer: Option<PointerUpdate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameUpdateKind {
+    None,
+    ImageOnly,
+    PointerOnly,
+    ImageAndPointer,
+}
+
+impl FrameUpdateKind {
+    pub fn from_flags(
+        has_image_update: bool,
+        has_pointer_update: bool,
+    ) -> Self {
+        match (has_image_update, has_pointer_update) {
+            (false, false) => Self::None,
+            (true, false) => Self::ImageOnly,
+            (false, true) => Self::PointerOnly,
+            (true, true) => Self::ImageAndPointer,
+        }
+    }
+
+    pub fn has_image_update(&self) -> bool {
+        matches!(self, Self::ImageOnly | Self::ImageAndPointer)
+    }
+
+    pub fn has_pointer_update(&self) -> bool {
+        matches!(self, Self::PointerOnly | Self::ImageAndPointer)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PointerPosition {
+    pub x: i32,
+    pub y: i32,
+    pub visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointerUpdate {
+    pub last_update_qpc: i64,
+    pub position: PointerPosition,
+    pub shape: Option<PointerShape>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointerShape {
+    pub kind: PointerShapeKind,
+    pub width: u32,
+    pub height: u32,
+    pub pitch: u32,
+    pub hotspot_x: i32,
+    pub hotspot_y: i32,
+    pub pixels_rgba: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerShapeKind {
+    Monochrome,
+    Color,
+    MaskedColor,
+    Unknown(u32),
+}
+
+impl PointerShapeKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Monochrome => "monochrome",
+            Self::Color => "color",
+            Self::MaskedColor => "masked_color",
+            Self::Unknown(_) => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +273,13 @@ pub trait CaptureSession {
 
     fn acquire_frame(&mut self) -> Result<Option<CapturedFrame>, CaptureError>;
 
+    /// Number of times the session recovered from access-lost errors.
+    fn access_lost_recoveries(&self) -> u32 { 0 }
+
+    /// Check whether the underlying D3D device is still healthy.
+    /// Returns `Ok(())` if the device is fine, or a descriptive error string.
+    fn check_device_health(&self) -> Result<(), String> { Ok(()) }
+
     #[cfg(windows)]
     fn d3d11_device(&self) -> ID3D11Device;
 }
@@ -204,7 +287,7 @@ pub trait CaptureSession {
 #[cfg_attr(not(windows), allow(dead_code))]
 enum CapturedFrameInner {
     #[cfg(windows)]
-    Dxgi(windows_backend::WindowsFrame),
+    Dxgi(Option<windows_backend::WindowsFrame>),
     #[cfg(not(windows))]
     Unsupported,
 }
@@ -221,21 +304,32 @@ impl CapturedFrame {
     }
 
     #[cfg(windows)]
-    pub fn texture(&self) -> &ID3D11Texture2D {
+    pub fn texture(&self) -> Option<&ID3D11Texture2D> {
         match &self.inner {
-            CapturedFrameInner::Dxgi(frame) => frame.texture(),
+            CapturedFrameInner::Dxgi(Some(frame)) => Some(frame.texture()),
+            CapturedFrameInner::Dxgi(None) => None,
         }
     }
 
     #[cfg(windows)]
     pub(crate) fn from_windows(
         metadata: FrameMetadata,
-        frame: windows_backend::WindowsFrame,
+        frame: Option<windows_backend::WindowsFrame>,
     ) -> Self {
         Self {
             metadata,
             inner: CapturedFrameInner::Dxgi(frame),
         }
+    }
+}
+
+impl FrameMetadata {
+    pub fn image_updated(&self) -> bool {
+        self.update_kind.has_image_update()
+    }
+
+    pub fn pointer_updated(&self) -> bool {
+        self.update_kind.has_pointer_update()
     }
 }
 
@@ -369,6 +463,17 @@ mod tests {
         let selected = select_display_info(&displays, &target).unwrap();
         assert_eq!(selected.id.adapter_luid, 20);
         assert_eq!(selected.id.output_index, 1);
+    }
+
+    #[test]
+    fn frame_update_kind_distinguishes_pointer_and_image_updates() {
+        assert_eq!(FrameUpdateKind::from_flags(true, false), FrameUpdateKind::ImageOnly);
+        assert_eq!(FrameUpdateKind::from_flags(false, true), FrameUpdateKind::PointerOnly);
+        assert_eq!(
+            FrameUpdateKind::from_flags(true, true),
+            FrameUpdateKind::ImageAndPointer
+        );
+        assert_eq!(FrameUpdateKind::from_flags(false, false), FrameUpdateKind::None);
     }
 
     #[cfg(not(windows))]

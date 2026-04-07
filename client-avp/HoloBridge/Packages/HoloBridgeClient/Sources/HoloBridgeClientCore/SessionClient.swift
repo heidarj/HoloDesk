@@ -54,6 +54,7 @@ public enum SessionClientError: Error, LocalizedError {
 
 public typealias IdentityTokenSupplier = @Sendable () async throws -> String
 public typealias VideoDatagramHandler = @Sendable (Data) -> Void
+public typealias PointerShapeMessageHandler = @Sendable (ControlMessage) -> Void
 public typealias StateChangeHandler = @Sendable (SessionClientState) -> Void
 public typealias TransportClientFactory = @Sendable (TransportConfiguration) -> any TransportClient
 public typealias TransportConfigurationFactory = @Sendable (SessionEndpoint) -> TransportConfiguration
@@ -78,6 +79,7 @@ public actor SessionClient {
     private let transportClientFactory: TransportClientFactory
     private let onStateChange: StateChangeHandler?
     private let onVideoDatagram: VideoDatagramHandler?
+    private let onPointerShapeMessage: PointerShapeMessageHandler?
 
     private var transport: (any TransportClient)?
     private var transportGeneration = 0
@@ -99,19 +101,21 @@ public actor SessionClient {
             )
         },
         transportClientFactory: @escaping TransportClientFactory = { configuration in
-            if #available(visionOS 1.0, iOS 15.0, macOS 13.0, *) {
+            if #available(visionOS 1.0, iOS 15.0, macOS 12.0, *) {
                 return NetworkFrameworkQuicClient(configuration: configuration)
             }
 
-            fatalError("NetworkFrameworkQuicClient requires macOS 13.0 or newer")
+            fatalError("NetworkFrameworkQuicClient requires macOS 12.0 or newer")
         },
         onStateChange: StateChangeHandler? = nil,
-        onVideoDatagram: VideoDatagramHandler? = nil
+        onVideoDatagram: VideoDatagramHandler? = nil,
+        onPointerShapeMessage: PointerShapeMessageHandler? = nil
     ) {
         self.transportConfigurationFactory = transportConfigurationFactory
         self.transportClientFactory = transportClientFactory
         self.onStateChange = onStateChange
         self.onVideoDatagram = onVideoDatagram
+        self.onPointerShapeMessage = onPointerShapeMessage
     }
 
     @discardableResult
@@ -146,12 +150,7 @@ public actor SessionClient {
 
             try await preparedTransport.client.sendHello(
                 clientName: "holobridge-avp",
-                capabilities: requestVideo
-                    ? [
-                        ControlMessage.controlStreamCapability,
-                        ControlMessage.videoDatagramCapability,
-                    ]
-                    : [ControlMessage.controlStreamCapability]
+                capabilities: capabilities(for: requestVideo)
             )
             _ = try await preparedTransport.client.awaitHelloAck()
 
@@ -214,12 +213,7 @@ public actor SessionClient {
             let preparedTransport = try await openTransport(endpoint: endpoint)
             try await preparedTransport.client.sendHello(
                 clientName: "holobridge-avp",
-                capabilities: requestVideo
-                    ? [
-                        ControlMessage.controlStreamCapability,
-                        ControlMessage.videoDatagramCapability,
-                    ]
-                    : [ControlMessage.controlStreamCapability]
+                capabilities: capabilities(for: requestVideo)
             )
             _ = try await preparedTransport.client.awaitHelloAck()
             try await preparedTransport.client.sendResumeSession(resumeToken: binding.resumeToken)
@@ -329,6 +323,8 @@ public actor SessionClient {
             await invalidateCurrentTransport(reason: nil)
             clearSessionContext()
             setState(.disconnected)
+        case .pointerShape:
+            onPointerShapeMessage?(message)
         default:
             break
         }
@@ -483,6 +479,19 @@ public actor SessionClient {
         }
         state = newState
         onStateChange?(newState)
+    }
+
+    private func capabilities(for requestVideo: Bool) -> [String] {
+        guard requestVideo else {
+            return [ControlMessage.controlStreamCapability]
+        }
+
+        return [
+            ControlMessage.controlStreamCapability,
+            ControlMessage.videoDatagramCapability,
+            ControlMessage.pointerDatagramCapability,
+            ControlMessage.pointerStreamCapability,
+        ]
     }
 }
 

@@ -106,6 +106,29 @@ final class H264VideoDatagramTests: XCTestCase {
         }
     }
 
+    func testPointerStateDatagramDecode() throws {
+        var datagram = Data(repeating: 0, count: 24)
+        datagram[0] = 1
+        datagram[1] = 0x01
+        datagram[2] = 1
+        datagram.replaceSubrange(4..<12, with: withUnsafeBytes(of: UInt64(99).bigEndian, Array.init))
+        datagram.replaceSubrange(12..<16, with: withUnsafeBytes(of: UInt32(bitPattern: Int32(-17)).bigEndian, Array.init))
+        datagram.replaceSubrange(16..<20, with: withUnsafeBytes(of: UInt32(bitPattern: Int32(42)).bigEndian, Array.init))
+
+        let parsed = try MediaDatagramParser.decode(datagram)
+        XCTAssertEqual(
+            parsed,
+            .pointerState(
+                PointerStateDatagram(
+                    sequence: 99,
+                    x: -17,
+                    y: 42,
+                    visible: true
+                )
+            )
+        )
+    }
+
     private func makeDatagram(
         accessUnitID: UInt64,
         fragmentIndex: UInt16,

@@ -8,6 +8,7 @@ public enum ControlMessageType: String, Codable, Sendable {
     case resumeSession = "resume_session"
     case authResult = "auth_result"
     case resumeResult = "resume_result"
+    case pointerShape = "pointer_shape"
 }
 
 public enum ControlMessageCodecError: Error, LocalizedError, Sendable, Equatable {
@@ -38,6 +39,8 @@ public struct ControlMessage: Codable, Sendable, Equatable {
     public static let defaultALPN = "holobridge-m2"
     public static let controlStreamCapability = "control-stream-v1"
     public static let videoDatagramCapability = "video-datagram-h264-v1"
+    public static let pointerDatagramCapability = "pointer-datagram-v1"
+    public static let pointerStreamCapability = "pointer-stream-v1"
 
     public let type: ControlMessageType
     public let protocolVersion: Int?
@@ -51,6 +54,12 @@ public struct ControlMessage: Codable, Sendable, Equatable {
     public let userDisplayName: String?
     public let sessionID: String?
     public let resumeTokenTTLSeconds: UInt64?
+    public let shapeKind: String?
+    public let width: UInt32?
+    public let height: UInt32?
+    public let hotspotX: Int32?
+    public let hotspotY: Int32?
+    public let pixelsRGBABase64: String?
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -65,6 +74,12 @@ public struct ControlMessage: Codable, Sendable, Equatable {
         case userDisplayName = "user_display_name"
         case sessionID = "session_id"
         case resumeTokenTTLSeconds = "resume_token_ttl_secs"
+        case shapeKind = "shape_kind"
+        case width
+        case height
+        case hotspotX = "hotspot_x"
+        case hotspotY = "hotspot_y"
+        case pixelsRGBABase64 = "pixels_rgba_base64"
     }
 
     public init(
@@ -79,7 +94,13 @@ public struct ControlMessage: Codable, Sendable, Equatable {
         success: Bool? = nil,
         userDisplayName: String? = nil,
         sessionID: String? = nil,
-        resumeTokenTTLSeconds: UInt64? = nil
+        resumeTokenTTLSeconds: UInt64? = nil,
+        shapeKind: String? = nil,
+        width: UInt32? = nil,
+        height: UInt32? = nil,
+        hotspotX: Int32? = nil,
+        hotspotY: Int32? = nil,
+        pixelsRGBABase64: String? = nil
     ) {
         self.type = type
         self.protocolVersion = protocolVersion
@@ -93,6 +114,12 @@ public struct ControlMessage: Codable, Sendable, Equatable {
         self.userDisplayName = userDisplayName
         self.sessionID = sessionID
         self.resumeTokenTTLSeconds = resumeTokenTTLSeconds
+        self.shapeKind = shapeKind
+        self.width = width
+        self.height = height
+        self.hotspotX = hotspotX
+        self.hotspotY = hotspotY
+        self.pixelsRGBABase64 = pixelsRGBABase64
     }
 
     public static func hello(
@@ -158,6 +185,25 @@ public struct ControlMessage: Codable, Sendable, Equatable {
             userDisplayName: userDisplayName,
             sessionID: sessionID,
             resumeTokenTTLSeconds: resumeTokenTTLSeconds
+        )
+    }
+
+    public static func pointerShape(
+        shapeKind: String,
+        width: UInt32,
+        height: UInt32,
+        hotspotX: Int32,
+        hotspotY: Int32,
+        pixelsRGBABase64: String
+    ) -> ControlMessage {
+        ControlMessage(
+            type: .pointerShape,
+            shapeKind: shapeKind,
+            width: width,
+            height: height,
+            hotspotX: hotspotX,
+            hotspotY: hotspotY,
+            pixelsRGBABase64: pixelsRGBABase64
         )
     }
 

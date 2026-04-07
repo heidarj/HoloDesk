@@ -9,9 +9,14 @@ use bytes::Bytes;
 use holobridge_encode::EncodedAccessUnit;
 
 pub const VIDEO_DATAGRAM_CAPABILITY: &str = "video-datagram-h264-v1";
+pub const POINTER_DATAGRAM_CAPABILITY: &str = "pointer-datagram-v1";
 pub const MEDIA_DATAGRAM_VERSION: u8 = 1;
 pub const MEDIA_DATAGRAM_HEADER_LEN: usize = 32;
+pub const POINTER_DATAGRAM_HEADER_LEN: usize = 24;
+pub const MEDIA_DATAGRAM_KIND_VIDEO: u8 = 0;
+pub const MEDIA_DATAGRAM_KIND_POINTER_STATE: u8 = 1;
 const KEYFRAME_FLAG: u8 = 0x01;
+const POINTER_VISIBLE_FLAG: u8 = 0x01;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaDatagramHeader {
@@ -32,6 +37,14 @@ pub struct ReassembledAccessUnit {
     pub is_keyframe: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointerStateDatagram {
+    pub sequence: u64,
+    pub x: i32,
+    pub y: i32,
+    pub visible: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReassemblerConfig {
     pub incomplete_timeout: Duration,
@@ -47,6 +60,7 @@ pub struct ReassemblerStats {
 pub enum MediaDatagramError {
     HeaderTooShort { actual: usize },
     UnsupportedVersion { actual: u8 },
+    UnexpectedPacketKind { actual: u8 },
     InvalidFragmentCount { actual: u16 },
     InvalidFragmentIndex { index: u16, count: u16 },
     EmptyPayload { access_unit_id: u64 },
@@ -54,6 +68,7 @@ pub enum MediaDatagramError {
     AccessUnitPayloadEmpty,
     MaxPayloadTooSmall { actual: usize },
     InconsistentFragmentMetadata { access_unit_id: u64 },
+    PointerDatagramTooShort { actual: usize },
 }
 
 pub struct H264DatagramPacketizer {
@@ -98,6 +113,7 @@ impl MediaDatagramHeader {
         let mut encoded = [0u8; MEDIA_DATAGRAM_HEADER_LEN];
         encoded[0] = MEDIA_DATAGRAM_VERSION;
         encoded[1] = if self.is_keyframe { KEYFRAME_FLAG } else { 0 };
+        encoded[2] = MEDIA_DATAGRAM_KIND_VIDEO;
         encoded[4..12].copy_from_slice(&self.access_unit_id.to_be_bytes());
         encoded[12..14].copy_from_slice(&self.fragment_index.to_be_bytes());
         encoded[14..16].copy_from_slice(&self.fragment_count.to_be_bytes());
@@ -117,6 +133,10 @@ impl MediaDatagramHeader {
         if version != MEDIA_DATAGRAM_VERSION {
             return Err(MediaDatagramError::UnsupportedVersion { actual: version });
         }
+        let packet_kind = datagram[2];
+        if packet_kind != MEDIA_DATAGRAM_KIND_VIDEO {
+            return Err(MediaDatagramError::UnexpectedPacketKind { actual: packet_kind });
+        }
 
         let fragment_index = u16::from_be_bytes([datagram[12], datagram[13]]);
         let fragment_count = u16::from_be_bytes([datagram[14], datagram[15]]);
@@ -131,6 +151,42 @@ impl MediaDatagramHeader {
             is_keyframe: (datagram[1] & KEYFRAME_FLAG) != 0,
         };
         Ok((header, &datagram[MEDIA_DATAGRAM_HEADER_LEN..]))
+    }
+}
+
+impl PointerStateDatagram {
+    pub fn encode(&self) -> [u8; POINTER_DATAGRAM_HEADER_LEN] {
+        let mut encoded = [0u8; POINTER_DATAGRAM_HEADER_LEN];
+        encoded[0] = MEDIA_DATAGRAM_VERSION;
+        encoded[1] = if self.visible { POINTER_VISIBLE_FLAG } else { 0 };
+        encoded[2] = MEDIA_DATAGRAM_KIND_POINTER_STATE;
+        encoded[4..12].copy_from_slice(&self.sequence.to_be_bytes());
+        encoded[12..16].copy_from_slice(&self.x.to_be_bytes());
+        encoded[16..20].copy_from_slice(&self.y.to_be_bytes());
+        encoded
+    }
+
+    pub fn decode(datagram: &[u8]) -> Result<Self, MediaDatagramError> {
+        if datagram.len() < POINTER_DATAGRAM_HEADER_LEN {
+            return Err(MediaDatagramError::PointerDatagramTooShort {
+                actual: datagram.len(),
+            });
+        }
+        let version = datagram[0];
+        if version != MEDIA_DATAGRAM_VERSION {
+            return Err(MediaDatagramError::UnsupportedVersion { actual: version });
+        }
+        let packet_kind = datagram[2];
+        if packet_kind != MEDIA_DATAGRAM_KIND_POINTER_STATE {
+            return Err(MediaDatagramError::UnexpectedPacketKind { actual: packet_kind });
+        }
+
+        Ok(Self {
+            sequence: u64::from_be_bytes(datagram[4..12].try_into().expect("pointer sequence")),
+            x: i32::from_be_bytes(datagram[12..16].try_into().expect("pointer x")),
+            y: i32::from_be_bytes(datagram[16..20].try_into().expect("pointer y")),
+            visible: (datagram[1] & POINTER_VISIBLE_FLAG) != 0,
+        })
     }
 }
 
@@ -349,6 +405,9 @@ impl fmt::Display for MediaDatagramError {
             Self::UnsupportedVersion { actual } => {
                 write!(formatter, "unsupported media datagram version: {actual}")
             }
+            Self::UnexpectedPacketKind { actual } => {
+                write!(formatter, "unexpected media datagram packet kind: {actual}")
+            }
             Self::InvalidFragmentCount { actual } => {
                 write!(formatter, "invalid fragment count: {actual}")
             }
@@ -376,6 +435,9 @@ impl fmt::Display for MediaDatagramError {
                     "fragment metadata changed within access unit {access_unit_id}"
                 )
             }
+            Self::PointerDatagramTooShort { actual } => {
+                write!(formatter, "pointer datagram shorter than header: {actual} bytes")
+            }
         }
     }
 }
@@ -386,7 +448,8 @@ impl Error for MediaDatagramError {}
 mod tests {
     use super::{
         negotiated_datagram_payload_limit, H264DatagramPacketizer, H264DatagramReassembler,
-        MediaDatagramHeader, MediaDatagramError, ReassemblerConfig, MEDIA_DATAGRAM_HEADER_LEN,
+        MediaDatagramHeader, MediaDatagramError, PointerStateDatagram, ReassemblerConfig,
+        MEDIA_DATAGRAM_HEADER_LEN,
     };
     use std::time::{Duration, Instant};
 
@@ -489,5 +552,18 @@ mod tests {
             error,
             MediaDatagramError::UnsupportedVersion { actual: 0 }
         ));
+    }
+
+    #[test]
+    fn pointer_state_datagram_roundtrip_preserves_fields() {
+        let datagram = PointerStateDatagram {
+            sequence: 9,
+            x: 1440,
+            y: 900,
+            visible: true,
+        };
+
+        let decoded = PointerStateDatagram::decode(&datagram.encode()).unwrap();
+        assert_eq!(decoded, datagram);
     }
 }

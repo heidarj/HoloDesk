@@ -28,6 +28,10 @@
 		"/^pwsh -File \"c:/Users/heida/source/HoloDesk/scripts/host-transport-test\\.ps1\"$/": {
 			"approve": true,
 			"matchCommandLine": true
+		},
+		"/^cd /Users/heidar\\.holmberg\\.jonsson/source/HoloDesk/scripts && bash client-mac-quic-interop\\.sh --mode datagram 2>&1$/": {
+			"approve": true,
+			"matchCommandLine": true
 		}
 	}
 }

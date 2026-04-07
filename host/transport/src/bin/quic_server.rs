@@ -7,6 +7,7 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    install_panic_hook();
     init_tracing();
 
     let transport_config = TransportServerConfig::from_env();
@@ -36,6 +37,14 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("[holobridge-panic] {panic_info}");
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        eprintln!("[holobridge-panic] backtrace:\n{backtrace}");
+    }));
 }
 
 fn init_tracing() {

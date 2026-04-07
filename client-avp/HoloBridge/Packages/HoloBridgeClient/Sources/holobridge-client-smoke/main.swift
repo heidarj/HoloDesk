@@ -93,6 +93,14 @@ private struct SmokeError: LocalizedError {
 }
 
 @available(macOS 12.0, *)
+private func formatDiagnostic(_ event: TransportDiagnosticEvent) -> String {
+    if let detail = event.detail, !detail.isEmpty {
+        return "transport_event: \(event.kind.rawValue) detail=\(detail)"
+    }
+    return "transport_event: \(event.kind.rawValue)"
+}
+
+@available(macOS 12.0, *)
 private actor SmokeCollector {
     private var reassembler = H264VideoDatagramReassembler()
     private var completedAccessUnits = 0
@@ -186,6 +194,14 @@ enum SmokeMain {
                     port: endpoint.port,
                     serverName: "localhost",
                     allowInsecureCertificateValidation: options.allowInsecureCert
+                )
+            },
+            transportClientFactory: { configuration in
+                NetworkFrameworkQuicClient(
+                    configuration: configuration,
+                    diagnosticHandler: { event in
+                        print(formatDiagnostic(event))
+                    }
                 )
             },
             onStateChange: { state in

@@ -25,6 +25,13 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 
 ## Latest Changes
 
+- Updated `scripts/e2e.ps1` so normal runs keep standard host logging while `.\scripts\e2e.ps1 -Verbose` enables the deep capture/video/encode trace path, panic backtraces, and a timestamped host log under `artifacts/e2e/`.
+- Added pointer-aware DXGI capture metadata on the host: capture frames now distinguish image-only, pointer-only, and combined updates, and include pointer position plus optional pointer-shape payloads.
+- Added a host-side pointer overlay transport path: pointer position/visibility now travels as a lightweight QUIC datagram, pointer-shape changes travel as reliable control messages, and pointer-only desktop duplication updates no longer have to traverse the H.264 encoder when the client negotiated pointer overlay support.
+- Added stage-aware video worker telemetry and a watchdog in `host/transport/` that tracks the current capture/encode/send stage, logs periodic heartbeats, records the last HRESULT/detail, and closes the active stream loudly if the worker wedges instead of silently stopping frame delivery.
+- Added documented trace switches for live debugging: `HOLOBRIDGE_CAPTURE_TRACE`, `HOLOBRIDGE_VIDEO_TRACE`, and the pre-existing `HOLOBRIDGE_ENCODE_TRACE`.
+- Extended the shared Apple client package and visionOS app pipeline to understand pointer-state datagrams and `pointer_shape` control messages, maintain cursor state separately from decoded video frames, and render a native cursor overlay above the video surface.
+- Added focused tests for pointer update classification, pointer datagram codec round-trips, pointer-shape control-message round-trips, session forwarding of `pointer_shape`, and pointer-only host dispatch behavior.
 - Extracted the Apple client transport/session/datagram code into a new local Swift package under `client-avp/HoloBridge/Packages/HoloBridgeClient`, with `HoloBridgeClientCore`, `HoloBridgeClientTestAuth`, and a headless `holobridge-client-smoke` executable target.
 - Added a shared `SessionClient` actor for `connect -> hello -> auth`, resume-token reuse, background control monitoring, and video datagram forwarding, while keeping Apple auth, decode, rendering, and SwiftUI state management in the visionOS app target.
 - Refactored the canonical visionOS app target to consume the shared package instead of the old app-local transport files, and deleted the duplicated app-local `ControlMessage`, `TransportConfiguration`, `TransportClient`, `NetworkFrameworkQuicClient`, and H.264 datagram reassembly sources.
@@ -120,6 +127,11 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 
 ### Milestone 6
 
+- [x] Real Windows host + Apple Vision Pro validation on 2026-04-07 confirmed that the stream no longer stalls during active desktop interaction; pointer movement stayed synchronized through the new overlay path and the host continued streaming reliably under continuous mouse movement and clicking.
+- [x] `scripts/e2e.ps1` now supports both quiet and deep-debug runs from the Windows host workflow, with `-Verbose` enabling capture/video/encode traces plus a timestamped host log artifact.
+- [x] `cargo test -q -p holobridge-transport` passes on this Windows host after the pointer-overlay stability work, including the new pointer-shape/control-message and pointer-only dispatch coverage.
+- [x] `cargo test -q` passes across the Rust host workspace after the pointer-overlay stability work.
+- [ ] `swift test --package-path client-avp/HoloBridge/Packages/HoloBridgeClient` could not be re-run from this Windows desktop on 2026-04-07 because the `swift` toolchain is not installed here.
 - [x] `swift test --package-path client-avp/HoloBridge/Packages/HoloBridgeClient` passes on macOS for the extracted shared client package, including control-message codec tests, H.264 datagram reassembly tests, and `SessionClient` auth/resume behavior with mocked transports.
 - [x] `xcodebuild` still succeeds for both `generic/platform=visionOS Simulator` and `generic/platform=visionOS` after the visionOS app target was switched to the shared local Swift package.
 - [x] The repo now includes a local macOS smoke loop: `scripts/client-mac-smoke-local.sh` builds the Rust host, generates test keys, starts a synthetic-video host session, and launches the new `holobridge-client-smoke` executable.
@@ -135,6 +147,9 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 
 ## Known Limitations
 
+- The new pointer overlay path on the Apple client was authored from Windows and has not been rebuilt with Xcode in this pass because `swift`/`xcodebuild` are unavailable on this machine.
+- Masked-color Windows cursor shapes are currently approximated as RGBA images on the host. Typical color and monochrome cursors are handled, but XOR-style masked-color cursors may not render perfectly yet.
+- The host watchdog now fails loudly when the worker stalls, but the underlying Media Foundation / D3D11 calls are still in-process. If Windows wedges inside a driver path that ignores flush/close, a full process restart may still be required.
 - The capture crate intentionally exposes GPU textures only on Windows. Non-Windows builds compile for workspace health, but all capture entrypoints return `UnsupportedPlatform`.
 - The Media Foundation backend currently selects the first compatible hardware H.264 MFT. There is no vendor-specific encoder selection or capability ranking yet.
 - Authorization is still effectively first-user bootstrap by default; there is no explicit admin flow yet for reviewing or pre-registering Apple `sub` values.
@@ -147,7 +162,7 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 
 ## Next Recommended Step
 
-Use the new macOS smoke loop to finish isolating the Apple QUIC transport issue, then either bridge the Apple client to the Network.framework C API for QUIC datagrams or adopt a scoped fallback transport strategy for Apple-side real-time media. After that, re-run `scripts/host-video-smoke.ps1` from a Windows console session with DXGI duplication access and complete the AVP end-to-end Milestone 6 acceptance pass.
+Now that the stream is stable under real AVP interaction, use the quieter default `scripts/e2e.ps1` path for day-to-day validation and reserve `.\scripts\e2e.ps1 -Verbose` for regressions. The next engineering pass should focus on cursor-shape edge cases such as masked-color fidelity and then decide whether reconnect cleanup or additional client-side diagnostics is the better follow-up milestone.
 
 ---
 

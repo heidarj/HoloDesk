@@ -30,4 +30,19 @@ final class ControlMessageCodecTests: XCTestCase {
             XCTAssertEqual(error as? ControlMessageCodecError, .unsupportedProtocolVersion(999))
         }
     }
+
+    func testPointerShapeRoundTrip() throws {
+        let original = ControlMessage.pointerShape(
+            shapeKind: "color",
+            width: 24,
+            height: 24,
+            hotspotX: 3,
+            hotspotY: 5,
+            pixelsRGBABase64: "AQIDBA=="
+        )
+
+        let frame = try ControlMessageCodec.encodeFrame(original)
+        let decoded = try ControlMessageCodec.decodeFrame(frame)
+        XCTAssertEqual(decoded, original)
+    }
 }

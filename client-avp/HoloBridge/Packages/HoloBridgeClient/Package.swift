@@ -1,11 +1,11 @@
-// swift-tools-version: 5.10
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "HoloBridgeClient",
     platforms: [
-        .macOS(.v12),
-        .visionOS(.v1),
+        .macOS(.v26),
+        .visionOS(.v26),
     ],
     products: [
         .library(
@@ -20,8 +20,22 @@ let package = Package(
             name: "holobridge-client-smoke",
             targets: ["holobridge-client-smoke"]
         ),
+        .executable(
+            name: "holobridge-quic-interop-smoke",
+            targets: ["holobridge-quic-interop-smoke"]
+        ),
     ],
     targets: [
+        .target(
+            name: "HoloBridgeClientQuicBridge",
+            path: "Sources/HoloBridgeClientQuicBridge",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("Foundation"),
+                .linkedFramework("Network"),
+                .linkedFramework("Security"),
+            ]
+        ),
         .target(
             name: "HoloBridgeClientCore"
         ),
@@ -35,6 +49,10 @@ let package = Package(
                 "HoloBridgeClientCore",
                 "HoloBridgeClientTestAuth",
             ]
+        ),
+        .executableTarget(
+            name: "holobridge-quic-interop-smoke",
+            dependencies: ["HoloBridgeClientQuicBridge"]
         ),
         .testTarget(
             name: "HoloBridgeClientCoreTests",

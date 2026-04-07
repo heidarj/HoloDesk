@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const DEFAULT_ALPN: &str = "holobridge-m2";
 pub const CONTROL_STREAM_CAPABILITY: &str = "control-stream-v1";
+pub const POINTER_STREAM_CAPABILITY: &str = "pointer-stream-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -55,6 +56,18 @@ pub enum ControlMessage {
         resume_token: Option<String>,
         #[serde(rename = "resume_token_ttl_secs")]
         resume_token_ttl_secs: Option<u64>,
+    },
+    PointerShape {
+        #[serde(rename = "shape_kind")]
+        shape_kind: String,
+        width: u32,
+        height: u32,
+        #[serde(rename = "hotspot_x")]
+        hotspot_x: i32,
+        #[serde(rename = "hotspot_y")]
+        hotspot_y: i32,
+        #[serde(rename = "pixels_rgba_base64")]
+        pixels_rgba_base64: String,
     },
 }
 
@@ -151,6 +164,24 @@ impl ControlMessage {
         }
     }
 
+    pub fn pointer_shape(
+        shape_kind: impl Into<String>,
+        width: u32,
+        height: u32,
+        hotspot_x: i32,
+        hotspot_y: i32,
+        pixels_rgba_base64: impl Into<String>,
+    ) -> Self {
+        Self::PointerShape {
+            shape_kind: shape_kind.into(),
+            width,
+            height,
+            hotspot_x,
+            hotspot_y,
+            pixels_rgba_base64: pixels_rgba_base64.into(),
+        }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Hello { .. } => "hello",
@@ -160,6 +191,7 @@ impl ControlMessage {
             Self::ResumeSession { .. } => "resume_session",
             Self::AuthResult { .. } => "auth_result",
             Self::ResumeResult { .. } => "resume_result",
+            Self::PointerShape { .. } => "pointer_shape",
         }
     }
 
@@ -175,7 +207,8 @@ impl ControlMessage {
             | Self::Authenticate { .. }
             | Self::ResumeSession { .. }
             | Self::AuthResult { .. }
-            | Self::ResumeResult { .. } => None,
+            | Self::ResumeResult { .. }
+            | Self::PointerShape { .. } => None,
         }
     }
 }
@@ -288,3 +321,26 @@ impl fmt::Display for ProtocolError {
 }
 
 impl Error for ProtocolError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pointer_shape_roundtrip_preserves_shape_payload() {
+        let message = ControlMessage::pointer_shape(
+            "color",
+            32,
+            16,
+            4,
+            7,
+            "AQIDBA==",
+        );
+
+        let encoded = ControlMessageCodec::encode(&message).unwrap();
+        let decoded = ControlMessageCodec::decode_frame(&encoded).unwrap();
+
+        assert_eq!(decoded, message);
+        assert_eq!(decoded.protocol_version(), None);
+    }
+}
