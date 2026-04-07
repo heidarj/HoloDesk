@@ -316,7 +316,15 @@ impl ActiveVideoStream {
     }
 
     async fn join(self) {
-        let _ = self.monitor_handle.await;
+        // Give the worker thread up to 5 seconds to stop.  If it is stuck in a
+        // blocking call (e.g. encoder GetEvent / acquire_frame) we must not
+        // block the accept loop forever.
+        match timeout(Duration::from_secs(5), self.monitor_handle).await {
+            Ok(_) => {}
+            Err(_) => {
+                warn!("host video: worker did not stop within 5 s — abandoning");
+            }
+        }
     }
 }
 
@@ -446,6 +454,7 @@ fn run_video_stream_worker(
     let mut frames_sent: u64 = 0;
     let mut last_frame_time = Instant::now();
     let mut last_recoveries: u32 = 0;
+    let mut last_loop_log = Instant::now();
     send_encoded_access_units(
         &connection,
         &video_config,
@@ -456,29 +465,36 @@ fn run_video_stream_worker(
     info!(frames_sent, "host video: first frame sent");
 
     while !stop_requested.load(Ordering::Relaxed) {
-        let Some(frame) = capture.acquire_frame().map_err(TransportError::Capture)? else {
-            // Check for prolonged stall (no frames acquired)
-            let stall_secs = last_frame_time.elapsed().as_secs();
-            if stall_secs > 0 && stall_secs % 2 == 0 {
+        // Periodic heartbeat so we can tell the worker thread is alive
+        if last_loop_log.elapsed() >= Duration::from_secs(2) {
+            info!(
+                frames_sent,
+                since_last_frame_ms = last_frame_time.elapsed().as_millis() as u64,
+                access_lost_recoveries = capture.access_lost_recoveries(),
+                "host video: worker heartbeat"
+            );
+            last_loop_log = Instant::now();
+        }
+
+        let frame = match capture.acquire_frame() {
+            Ok(Some(frame)) => frame,
+            Ok(None) => {
                 let recoveries = capture.access_lost_recoveries();
                 if recoveries != last_recoveries {
                     info!(
                         recoveries,
-                        stall_secs,
                         "host video: DXGI access-lost recovered, waiting for frames"
                     );
                     last_recoveries = recoveries;
                 }
-                if stall_secs == 2 {
-                    warn!(
-                        stall_secs,
-                        recoveries,
-                        "host video: no frames for 2s"
-                    );
-                }
+                continue;
             }
-            continue;
+            Err(error) => {
+                warn!(error = %error, "host video: acquire_frame error");
+                return Err(TransportError::Capture(error));
+            }
         };
+
         last_frame_time = Instant::now();
         let recoveries = capture.access_lost_recoveries();
         if recoveries != last_recoveries {
@@ -489,13 +505,25 @@ fn run_video_stream_worker(
             );
             last_recoveries = recoveries;
         }
-        let access_units = encoder.encode(&frame).map_err(TransportError::Encode)?;
-        send_encoded_access_units(
+
+        let access_units = match encoder.encode(&frame) {
+            Ok(aus) => aus,
+            Err(error) => {
+                warn!(error = %error, frames_sent, "host video: encode error");
+                return Err(TransportError::Encode(error));
+            }
+        };
+
+        if let Err(error) = send_encoded_access_units(
             &connection,
             &video_config,
             &mut packetizer,
             access_units,
-        )?;
+        ) {
+            warn!(error = %error, frames_sent, "host video: send error");
+            return Err(error);
+        }
+
         frames_sent += 1;
         if frames_sent % 60 == 0 {
             info!(frames_sent, "host video: streaming");

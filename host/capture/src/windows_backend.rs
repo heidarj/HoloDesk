@@ -151,6 +151,7 @@ impl CaptureSession for DxgiCaptureSession {
                 return self.recover_from_access_lost();
             }
             Err(error) => {
+                eprintln!("[capture] AcquireNextFrame error: 0x{:08x} {}", error.code().0 as u32, error.message());
                 return Err(CaptureError::from_windows(
                     "IDXGIOutputDuplication::AcquireNextFrame",
                     error,
@@ -203,6 +204,8 @@ impl DxgiCaptureSession {
     /// focus switches, resolution changes, or DWM recomposition events.
     /// Returns `Ok(None)` on success so the caller retries on the next tick.
     fn recover_from_access_lost(&mut self) -> Result<Option<CapturedFrame>, CaptureError> {
+        eprintln!("[capture] DXGI_ERROR_ACCESS_LOST — attempting recovery (previous recoveries: {})", self.access_lost_recoveries);
+
         // Drop the outstanding frame release (the old duplication is invalid).
         self.outstanding_release = None;
 
@@ -213,18 +216,21 @@ impl DxgiCaptureSession {
             Ok(new_duplication) => {
                 self.duplication = new_duplication;
                 self.access_lost_recoveries += 1;
+                eprintln!("[capture] DXGI recovery succeeded (total recoveries: {})", self.access_lost_recoveries);
                 Ok(None)
             }
             Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST => {
                 // Still not ready — caller will retry on the next acquire_frame call.
-                // Keep the old (invalid) duplication; next AcquireNextFrame will
-                // trigger another recovery attempt.
+                eprintln!("[capture] DuplicateOutput also returned ACCESS_LOST — will retry");
                 Ok(None)
             }
-            Err(error) => Err(map_duplication_error(
-                "IDXGIOutput1::DuplicateOutput (recovery)",
-                error,
-            )),
+            Err(error) => {
+                eprintln!("[capture] DuplicateOutput recovery failed: 0x{:08x} {}", error.code().0 as u32, error.message());
+                Err(map_duplication_error(
+                    "IDXGIOutput1::DuplicateOutput (recovery)",
+                    error,
+                ))
+            }
         }
     }
 }
