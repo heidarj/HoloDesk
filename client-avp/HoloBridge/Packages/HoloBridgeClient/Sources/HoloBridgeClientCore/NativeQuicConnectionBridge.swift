@@ -25,6 +25,10 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Senda
         self.configuration = configuration
     }
 
+    deinit {
+        logger.info("NativeQuicConnectionBridge deinit")
+    }
+
     func start(_ completion: @escaping @Sendable (Error?) -> Void) {
         guard connectionTask == nil else {
             completion(NSError(
@@ -73,9 +77,10 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Senda
                     self.didCompleteStart = true
                     completion(nil)
 
-                    try await withThrowingTaskGroup(of: Void.self) { group in
-                        // Receive control payloads (does NOT cancel group on endOfStream)
+                    try await withThrowingTaskGroup(of: String.self) { group in
+                        // Receive control payloads (suspends forever after work)
                         group.addTask { [weak self] in
+                            defer { self?.logger.info("task exiting: control-receive") }
                             do {
                                 while !Task.isCancelled {
                                     let message = try await stream.receive(atLeast: 1, atMost: 65_536)
@@ -94,16 +99,18 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Senda
                                 self?.logger.error("control stream read error: \(error.localizedDescription, privacy: .public)")
                                 self?.onTermination?(error)
                             }
-                            // Suspend until group is cancelled, so this task
+                            // Suspend until group is cancelled so this task
                             // does not trigger group.next() early.
                             await Task.yield()
                             while !Task.isCancelled {
                                 try? await Task.sleep(for: .seconds(3600))
                             }
+                            return "control-receive"
                         }
 
-                        // Receive datagrams (does NOT cancel group on stream end)
+                        // Receive datagrams (suspends forever after work)
                         group.addTask { [weak self] in
+                            defer { self?.logger.info("task exiting: datagram-receive") }
                             do {
                                 while !Task.isCancelled {
                                     let datagram = try await datagrams.receive()
@@ -121,10 +128,12 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Senda
                             while !Task.isCancelled {
                                 try? await Task.sleep(for: .seconds(3600))
                             }
+                            return "datagram-receive"
                         }
 
-                        // Send control payloads
+                        // Send control payloads (suspends forever after stream ends)
                         group.addTask { [weak self] in
+                            defer { self?.logger.info("task exiting: control-send") }
                             for await request in controlSendStream {
                                 do {
                                     try await stream.send(request.payload, endOfStream: false)
@@ -134,10 +143,17 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Senda
                                     request.completion(error)
                                 }
                             }
+                            // Suspend until group is cancelled so this task
+                            // does not trigger group.next() early.
+                            while !Task.isCancelled {
+                                try? await Task.sleep(for: .seconds(3600))
+                            }
+                            return "control-send"
                         }
 
-                        // Send datagrams
-                        group.addTask {
+                        // Send datagrams (suspends forever after stream ends)
+                        group.addTask { [weak self] in
+                            defer { self?.logger.info("task exiting: datagram-send") }
                             for await request in datagramSendStream {
                                 do {
                                     try await datagrams.send(request.payload)
@@ -146,20 +162,41 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Senda
                                     request.completion(error)
                                 }
                             }
+                            // Suspend until group is cancelled so this task
+                            // does not trigger group.next() early.
+                            while !Task.isCancelled {
+                                try? await Task.sleep(for: .seconds(3600))
+                            }
+                            return "datagram-send"
                         }
 
-                        // Close signal
+                        // Close signal — only task that SHOULD trigger group.next()
                         group.addTask { [weak self] in
                             await withCheckedContinuation { continuation in
                                 self?.closeContinuation = continuation
                             }
+                            return "close-signal"
                         }
 
-                        try await group.next()
+                        // Heartbeat — periodic log to confirm the connection scope is alive
+                        group.addTask { [weak self] in
+                            defer { self?.logger.info("task exiting: heartbeat") }
+                            while !Task.isCancelled {
+                                try? await Task.sleep(for: .seconds(5))
+                                if !Task.isCancelled {
+                                    self?.logger.info("bridge heartbeat: connection scope alive")
+                                }
+                            }
+                            return "heartbeat"
+                        }
+
+                        let triggeredBy = try await group.next() ?? "nil"
+                        self.logger.info("task group exiting, triggered by: \(triggeredBy, privacy: .public)")
                         group.cancelAll()
                     }
                 }
 
+                self?.logger.info("withNetworkConnection scope exited")
                 self?.emitEvent(.closeCompleted)
                 self?.logger.info("QUIC connection closed normally")
                 self?.onTermination?(nil)
