@@ -149,6 +149,7 @@ pub enum EncodeError {
     HardwareEncoderUnavailable,
     MissingSequenceHeader,
     Bitstream(String),
+    Timeout(&'static str),
     WindowsApi {
         operation: &'static str,
         code: i32,
@@ -170,6 +171,7 @@ impl fmt::Display for EncodeError {
                 "the encoder did not provide an H.264 sequence header",
             ),
             Self::Bitstream(message) => formatter.write_str(message),
+            Self::Timeout(message) => formatter.write_str(message),
             Self::WindowsApi {
                 operation,
                 code,

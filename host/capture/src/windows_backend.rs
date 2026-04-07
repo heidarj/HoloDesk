@@ -77,8 +77,36 @@ impl CaptureBackend for DxgiCaptureBackend {
             .ok_or_else(|| CaptureError::DisplayNotFound(target.to_string()))?;
 
         let device = create_device_for_adapter(&selected.adapter)?;
-        let duplication = unsafe { selected.output.DuplicateOutput(&device) }
-            .map_err(|error| map_duplication_error("IDXGIOutput1::DuplicateOutput", error))?;
+
+        // Retry DuplicateOutput up to 10 times (over ~2 s) to handle transient
+        // failures such as E_INVALIDARG after a previous capture session was
+        // abandoned while stuck, or ACCESS_LOST during a DWM transition.
+        let mut duplication = None;
+        for attempt in 0..10 {
+            match unsafe { selected.output.DuplicateOutput(&device) } {
+                Ok(dup) => {
+                    if attempt > 0 {
+                        eprintln!("[capture] DuplicateOutput succeeded on attempt {}", attempt + 1);
+                    }
+                    duplication = Some(dup);
+                    break;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[capture] DuplicateOutput attempt {} failed: 0x{:08x} {}",
+                        attempt + 1,
+                        error.code().0 as u32,
+                        error.message()
+                    );
+                    if attempt < 9 {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    } else {
+                        return Err(map_duplication_error("IDXGIOutput1::DuplicateOutput", error));
+                    }
+                }
+            }
+        }
+        let duplication = duplication.unwrap();
 
         Ok(Box::new(DxgiCaptureSession {
             display_info: selected.info,

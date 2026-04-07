@@ -327,9 +327,10 @@ impl MfH264Encoder {
         Ok(())
     }
 
-    /// Block until `METransformHaveOutput` is received from the async MFT.
+    /// Wait until `METransformHaveOutput` is received from the async MFT.
     /// For sync MFTs (no event generator) or when output is already pending,
-    /// returns immediately.
+    /// returns immediately.  Gives up after ~2 seconds to avoid blocking the
+    /// worker thread indefinitely when the hardware MFT stalls.
     fn wait_for_output_event(&mut self) -> Result<(), EncodeError> {
         let Some(event_generator) = &self.event_generator else {
             return Ok(());
@@ -338,11 +339,26 @@ impl MfH264Encoder {
             return Ok(());
         }
 
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            let event = unsafe {
-                event_generator
-                    .GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0))
-                    .map_err(|error| map_windows_error("IMFMediaEventGenerator::GetEvent(blocking)", error))?
+            let event = match unsafe { event_generator.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+                Ok(event) => event,
+                Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => {
+                    if std::time::Instant::now() >= deadline {
+                        eprintln!("[encode] wait_for_output_event timed out after 2s — MFT stalled");
+                        return Err(EncodeError::Timeout(
+                            "hardware encoder did not produce output within 2 s",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    continue;
+                }
+                Err(error) => {
+                    return Err(map_windows_error(
+                        "IMFMediaEventGenerator::GetEvent(wait_for_output)",
+                        error,
+                    ));
+                }
             };
             let event_type = unsafe {
                 event
@@ -365,19 +381,30 @@ impl MfH264Encoder {
 
     fn flush_async(&mut self) -> Result<Vec<EncodedAccessUnit>, EncodeError> {
         let mut encoded = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
 
         loop {
             let event_type = {
                 let event_generator = self.event_generator.as_ref().unwrap();
-                let event = match unsafe { event_generator.GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0)) } {
-                    Ok(event) => event,
-                    Err(error) => {
-                        trace_encoder(format!(
-                            "flush_async: GetEvent error 0x{:08x}: {}",
-                            error.code().0 as u32,
-                            error.message()
-                        ));
-                        break;
+                let event = loop {
+                    match unsafe { event_generator.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+                        Ok(event) => break event,
+                        Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => {
+                            if std::time::Instant::now() >= deadline {
+                                trace_encoder("flush_async: timed out waiting for events");
+                                return Ok(encoded);
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                            continue;
+                        }
+                        Err(error) => {
+                            trace_encoder(format!(
+                                "flush_async: GetEvent error 0x{:08x}: {}",
+                                error.code().0 as u32,
+                                error.message()
+                            ));
+                            return Ok(encoded);
+                        }
                     }
                 };
                 unsafe {
