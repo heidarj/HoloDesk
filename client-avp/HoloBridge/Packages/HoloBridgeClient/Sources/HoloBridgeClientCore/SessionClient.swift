@@ -99,11 +99,11 @@ public actor SessionClient {
             )
         },
         transportClientFactory: @escaping TransportClientFactory = { configuration in
-            if #available(visionOS 1.0, iOS 15.0, macOS 13.0, *) {
+            if #available(visionOS 1.0, iOS 15.0, macOS 12.0, *) {
                 return NetworkFrameworkQuicClient(configuration: configuration)
             }
 
-            fatalError("NetworkFrameworkQuicClient requires macOS 13.0 or newer")
+            fatalError("NetworkFrameworkQuicClient requires macOS 12.0 or newer")
         },
         onStateChange: StateChangeHandler? = nil,
         onVideoDatagram: VideoDatagramHandler? = nil

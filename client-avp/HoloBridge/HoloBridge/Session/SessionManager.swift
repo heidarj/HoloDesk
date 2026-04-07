@@ -59,6 +59,15 @@ public final class SessionManager {
                     allowInsecureCertificateValidation: true
                 )
             },
+            transportClientFactory: { [logger] configuration in
+                NetworkFrameworkQuicClient(
+                    configuration: configuration,
+                    diagnosticHandler: { event in
+                        let detail = event.detail ?? "-"
+                        logger.debug("transport event \(event.kind.rawValue, privacy: .public) detail=\(detail, privacy: .public)")
+                    }
+                )
+            },
             onStateChange: { [weak self] newState in
                 Task { @MainActor [weak self] in
                     guard let self else { return }

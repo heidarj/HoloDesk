@@ -10,6 +10,7 @@ private_key_path="/tmp/holobridge_test_priv.pem"
 public_key_path="/tmp/holobridge_test_pub.pem"
 user_store_path="$artifact_dir/authorized_users.json"
 swiftpm_cache_root="/tmp/HoloBridgeSwiftPM"
+swiftpm_scratch_root="/tmp/HoloBridgeClientSmokeBuild"
 
 mkdir -p "$artifact_dir"
 mkdir -p "$swiftpm_cache_root/ModuleCache"
@@ -22,8 +23,8 @@ cargo build -p holobridge-transport --bin quic_server --bin test_keygen
 popd >/dev/null
 
 pushd "$client_package_dir" >/dev/null
-swift build --product holobridge-client-smoke
-smoke_bin="$(swift build --show-bin-path)/holobridge-client-smoke"
+swift build --scratch-path "$swiftpm_scratch_root" --product holobridge-client-smoke
+smoke_bin="$(swift build --scratch-path "$swiftpm_scratch_root" --show-bin-path)/holobridge-client-smoke"
 popd >/dev/null
 
 export HOLOBRIDGE_AUTH_TEST_PRIVATE_KEY="$private_key_path"
@@ -65,8 +66,6 @@ fi
   --host 127.0.0.1 \
   --port 4433 \
   --allow-insecure-cert \
-  --request-video \
-  --resume-once \
   "$@"
 
 echo "quic_server_log: $server_log"

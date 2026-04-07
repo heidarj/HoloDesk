@@ -20,10 +20,25 @@ let package = Package(
             name: "holobridge-client-smoke",
             targets: ["holobridge-client-smoke"]
         ),
+        .executable(
+            name: "holobridge-quic-interop-smoke",
+            targets: ["holobridge-quic-interop-smoke"]
+        ),
     ],
     targets: [
         .target(
-            name: "HoloBridgeClientCore"
+            name: "HoloBridgeClientQuicBridge",
+            path: "Sources/HoloBridgeClientQuicBridge",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("Foundation"),
+                .linkedFramework("Network"),
+                .linkedFramework("Security"),
+            ]
+        ),
+        .target(
+            name: "HoloBridgeClientCore",
+            dependencies: ["HoloBridgeClientQuicBridge"]
         ),
         .target(
             name: "HoloBridgeClientTestAuth",
@@ -35,6 +50,10 @@ let package = Package(
                 "HoloBridgeClientCore",
                 "HoloBridgeClientTestAuth",
             ]
+        ),
+        .executableTarget(
+            name: "holobridge-quic-interop-smoke",
+            dependencies: ["HoloBridgeClientQuicBridge"]
         ),
         .testTarget(
             name: "HoloBridgeClientCoreTests",
