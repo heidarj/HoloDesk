@@ -43,6 +43,7 @@ public final class SessionManager {
     @ObservationIgnored private let logger = Logger(subsystem: "HoloBridge", category: "Session")
     @ObservationIgnored private let videoPipeline: VideoStreamPipeline
     @ObservationIgnored private var sessionClient: SessionClient! = nil
+    @ObservationIgnored private var connectTask: Task<Void, Never>?
 
     public init(authMode: AuthMode? = nil) {
         let renderer = VideoRenderer()
@@ -88,29 +89,42 @@ public final class SessionManager {
         )
     }
 
-    public func connect(host: String, port: UInt16) async {
-        let endpoint = SessionEndpoint(host: host, port: port)
-        let authProvider = makeAuthProvider()
-        let identityTokenSupplier: IdentityTokenSupplier = {
-            try await Task { @MainActor in
-                try await authProvider.getIdentityToken()
-            }.value
-        }
-
-        do {
-            _ = try await sessionClient.connect(
-                to: endpoint,
-                identityTokenSupplier: identityTokenSupplier,
-                requestVideo: true
-            )
-            logger.info("Session established")
-        } catch {
-            logger.error("Connection failed: \(error.localizedDescription, privacy: .public)")
-            if case .error = state {
-                return
+    public func connect(host: String, port: UInt16) {
+        connectTask?.cancel()
+        connectTask = Task {
+            let endpoint = SessionEndpoint(host: host, port: port)
+            let authProvider = makeAuthProvider()
+            let identityTokenSupplier: IdentityTokenSupplier = {
+                try await Task { @MainActor in
+                    try await authProvider.getIdentityToken()
+                }.value
             }
-            state = .error(error.localizedDescription)
+
+            do {
+                _ = try await sessionClient.connect(
+                    to: endpoint,
+                    identityTokenSupplier: identityTokenSupplier,
+                    requestVideo: true
+                )
+                logger.info("Session established")
+            } catch is CancellationError {
+                logger.info("Connection cancelled by user")
+                state = .disconnected
+            } catch {
+                logger.error("Connection failed: \(error.localizedDescription, privacy: .public)")
+                if case .error = state {
+                    return
+                }
+                state = .error(error.localizedDescription)
+            }
         }
+    }
+
+    public func cancelConnection() async {
+        connectTask?.cancel()
+        connectTask = nil
+        await sessionClient.disconnect(reason: "user-cancelled")
+        state = .disconnected
     }
 
     public func disconnect() async {

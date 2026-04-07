@@ -1,8 +1,7 @@
 import Foundation
 import Network
 
-@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
-final class NativeQuicConnectionBridge: QuicConnectionBridging {
+final class NativeQuicConnectionBridge: QuicConnectionBridging, @unchecked Sendable {
     var onEvent: ((QuicBridgeEvent) -> Void)?
     var onControlPayload: ((Data) -> Void)?
     var onDatagramPayload: ((Data) -> Void)?
@@ -24,7 +23,7 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging {
         self.configuration = configuration
     }
 
-    func start(_ completion: @escaping (Error?) -> Void) {
+    func start(_ completion: @escaping @Sendable (Error?) -> Void) {
         guard connectionTask == nil else {
             completion(NSError(
                 domain: NSPOSIXErrorDomain,
@@ -73,26 +72,48 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging {
                     completion(nil)
 
                     try await withThrowingTaskGroup(of: Void.self) { group in
-                        // Receive control payloads
+                        // Receive control payloads (does NOT cancel group on endOfStream)
                         group.addTask { [weak self] in
-                            while !Task.isCancelled {
-                                let message = try await stream.receive(atLeast: 1, atMost: 65_536)
-                                if let self {
-                                    self.emitEvent(.controlPayloadReceived, detail: "\(message.content.count)")
-                                    self.onControlPayload?(message.content)
+                            do {
+                                while !Task.isCancelled {
+                                    let message = try await stream.receive(atLeast: 1, atMost: 65_536)
+                                    if let self {
+                                        self.emitEvent(.controlPayloadReceived, detail: "\(message.content.count)")
+                                        self.onControlPayload?(message.content)
+                                    }
+                                    if message.metadata.endOfStream { break }
                                 }
-                                if message.metadata.endOfStream { break }
+                            } catch is CancellationError {
+                                // Expected on close
+                            } catch {
+                                // Control stream read failed — notify but keep datagrams alive
+                                self?.onTermination?(error)
+                            }
+                            // Suspend until group is cancelled, so this task
+                            // does not trigger group.next() early.
+                            await Task.yield()
+                            while !Task.isCancelled {
+                                try? await Task.sleep(for: .seconds(3600))
                             }
                         }
 
-                        // Receive datagrams
+                        // Receive datagrams (does NOT cancel group on stream end)
                         group.addTask { [weak self] in
-                            while !Task.isCancelled {
-                                let datagram = try await datagrams.receive()
-                                if let self {
-                                    self.emitEvent(.datagramReceived, detail: "\(datagram.content.count)")
-                                    self.onDatagramPayload?(datagram.content)
+                            do {
+                                while !Task.isCancelled {
+                                    let datagram = try await datagrams.receive()
+                                    if let self {
+                                        self.emitEvent(.datagramReceived, detail: "\(datagram.content.count)")
+                                        self.onDatagramPayload?(datagram.content)
+                                    }
                                 }
+                            } catch is CancellationError {
+                                // Expected on close
+                            } catch {
+                                self?.onTermination?(error)
+                            }
+                            while !Task.isCancelled {
+                                try? await Task.sleep(for: .seconds(3600))
                             }
                         }
 
@@ -145,7 +166,7 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging {
         }
     }
 
-    func sendControlPayload(_ payload: Data, completion: @escaping (Error?) -> Void) {
+    func sendControlPayload(_ payload: Data, completion: @escaping @Sendable (Error?) -> Void) {
         guard let cont = controlSendContinuation else {
             completion(NSError(
                 domain: NSPOSIXErrorDomain,
@@ -154,11 +175,10 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging {
             ))
             return
         }
-        let sendableCompletion: @Sendable (Error?) -> Void = { error in completion(error) }
-        cont.yield(SendRequest(payload: payload, completion: sendableCompletion))
+        cont.yield(SendRequest(payload: payload, completion: completion))
     }
 
-    func sendDatagramPayload(_ payload: Data, completion: @escaping (Error?) -> Void) {
+    func sendDatagramPayload(_ payload: Data, completion: @escaping @Sendable (Error?) -> Void) {
         guard let cont = datagramSendContinuation else {
             completion(NSError(
                 domain: NSPOSIXErrorDomain,
@@ -167,8 +187,7 @@ final class NativeQuicConnectionBridge: QuicConnectionBridging {
             ))
             return
         }
-        let sendableCompletion: @Sendable (Error?) -> Void = { error in completion(error) }
-        cont.yield(SendRequest(payload: payload, completion: sendableCompletion))
+        cont.yield(SendRequest(payload: payload, completion: completion))
     }
 
     func close(reason: String?) {

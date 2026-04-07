@@ -1,11 +1,11 @@
-// swift-tools-version: 5.10
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "HoloBridgeClient",
     platforms: [
-        .macOS(.v12),
-        .visionOS(.v1),
+        .macOS(.v26),
+        .visionOS(.v26),
     ],
     products: [
         .library(
@@ -37,8 +37,7 @@ let package = Package(
             ]
         ),
         .target(
-            name: "HoloBridgeClientCore",
-            dependencies: ["HoloBridgeClientQuicBridge"]
+            name: "HoloBridgeClientCore"
         ),
         .target(
             name: "HoloBridgeClientTestAuth",

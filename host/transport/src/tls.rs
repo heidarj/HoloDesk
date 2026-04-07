@@ -1,6 +1,6 @@
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, sync::Arc, time::Duration};
 
-use quinn::{crypto::rustls::QuicServerConfig, TransportConfig};
+use quinn::{crypto::rustls::QuicServerConfig, TransportConfig, VarInt};
 use rcgen::generate_simple_self_signed;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
@@ -87,6 +87,14 @@ fn build_transport_config(
     transport_config
         .datagram_receive_buffer_size(datagram_receive_buffer_size)
         .datagram_send_buffer_size(datagram_send_buffer_size);
+    // Send QUIC PING frames every 5 s to keep the connection alive. This
+    // prevents Network.framework on the client from timing out the QUIC
+    // connection during brief pauses in capture/encode.
+    transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
+    // Raise the idle timeout so transient stalls don't kill the session.
+    transport_config.max_idle_timeout(Some(
+        VarInt::from_u32(60_000).into(), // 60 seconds
+    ));
     transport_config
 }
 

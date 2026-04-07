@@ -427,7 +427,7 @@ private func makeQuicParameters(options: InteropOptions) throws -> NWParameters 
 @available(macOS 12.0, *)
 private func waitForConnectionReady(_ connection: NWConnection) async throws {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-        final class Gate {
+        final class Gate: @unchecked Sendable {
             var resumed = false
         }
 

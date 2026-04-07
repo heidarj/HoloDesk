@@ -1,6 +1,5 @@
 import Foundation
 
-@available(visionOS 1.0, iOS 15.0, macOS 12.0, *)
 public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Sendable {
     public let configuration: TransportConfiguration
 
@@ -27,10 +26,7 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         self.queue = queue
         self.diagnosticHandler = diagnosticHandler
         self.bridgeFactory = { configuration, queueLabel in
-            if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
-                return NativeQuicConnectionBridge(configuration: configuration, queueLabel: queueLabel)
-            }
-            return ObjectiveCQuicConnectionBridgeAdapter(configuration: configuration, queueLabel: queueLabel)
+            NativeQuicConnectionBridge(configuration: configuration, queueLabel: queueLabel)
         }
     }
 

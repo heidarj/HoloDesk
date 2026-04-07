@@ -68,15 +68,25 @@ struct ContentView: View {
 
             Button {
                 let portNum = UInt16(port) ?? 4433
-                Task {
-                    await session.connect(host: hostAddress, port: portNum)
-                }
+                session.connect(host: hostAddress, port: portNum)
             } label: {
                 Label(connectLabel, systemImage: connectSystemImage)
                     .frame(maxWidth: 250)
             }
             .buttonStyle(.borderedProminent)
             .disabled(isConnecting)
+
+            if isConnecting {
+                Button(role: .destructive) {
+                    Task {
+                        await session.cancelConnection()
+                    }
+                } label: {
+                    Label("Cancel", systemImage: "xmark.circle")
+                        .frame(maxWidth: 250)
+                }
+                .buttonStyle(.bordered)
+            }
         }
     }
 
