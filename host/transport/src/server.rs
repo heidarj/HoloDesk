@@ -317,10 +317,21 @@ impl ActiveVideoStream {
         // Try to unstick a blocked hardware encoder by sending MFT flush +
         // shutdown messages.  This is safe to call from any thread because
         // IMFTransform is free-threaded.
-        if let Some(handle) = self.abort_handle.lock().unwrap().as_ref() {
+        let abort_handle = self.abort_handle.lock().unwrap().clone();
+        if let Some(handle) = abort_handle {
             info!("host video: sending MFT abort (FLUSH + END_STREAMING)");
-            handle.abort();
+            let _ = std::thread::Builder::new()
+                .name("holobridge-mft-abort".to_owned())
+                .spawn(move || {
+                    handle.abort();
+                });
         }
+    }
+
+    fn detach(self) {
+        tokio::spawn(async move {
+            self.join().await;
+        });
     }
 
     async fn join(self) {
@@ -951,11 +962,6 @@ async fn run_server_control_stream(
         send.finish()?;
     }
 
-    if let Some(video_stream) = video_stream {
-        video_stream.stop();
-        video_stream.join().await;
-    }
-
     if let Some(session_id) = active_session_id {
         if let Some(sessions) = &session_manager {
             if unexpected_disconnect {
@@ -972,6 +978,16 @@ async fn run_server_control_stream(
                 info!(session_id, "host session terminated");
             }
         }
+    }
+
+    if let Some(video_stream) = video_stream {
+        video_stream.stop();
+        info!(
+            orderly_shutdown = protocol.orderly_shutdown_complete(),
+            unexpected_disconnect,
+            "host video: cleanup detached from control stream"
+        );
+        video_stream.detach();
     }
 
     info!(
