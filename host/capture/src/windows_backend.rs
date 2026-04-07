@@ -83,9 +83,11 @@ impl CaptureBackend for DxgiCaptureBackend {
         Ok(Box::new(DxgiCaptureSession {
             display_info: selected.info,
             device,
+            output: selected.output,
             duplication,
             config,
             outstanding_release: None,
+            access_lost_recoveries: 0,
             _single_threaded: PhantomData,
         }))
     }
@@ -115,9 +117,11 @@ impl WindowsFrame {
 struct DxgiCaptureSession {
     display_info: DisplayInfo,
     device: ID3D11Device,
+    output: IDXGIOutput1,
     duplication: IDXGIOutputDuplication,
     config: CaptureConfig,
     outstanding_release: Option<Arc<FrameRelease>>,
+    access_lost_recoveries: u32,
     _single_threaded: PhantomData<Rc<()>>,
 }
 
@@ -144,7 +148,7 @@ impl CaptureSession for DxgiCaptureSession {
             Ok(()) => {}
             Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
             Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST => {
-                return Err(CaptureError::AccessLost);
+                return self.recover_from_access_lost();
             }
             Err(error) => {
                 return Err(CaptureError::from_windows(
@@ -185,6 +189,43 @@ impl CaptureSession for DxgiCaptureSession {
 
     fn d3d11_device(&self) -> ID3D11Device {
         self.device.clone()
+    }
+
+    fn access_lost_recoveries(&self) -> u32 {
+        self.access_lost_recoveries
+    }
+}
+
+impl DxgiCaptureSession {
+    /// Handle DXGI_ERROR_ACCESS_LOST by recreating the output duplication.
+    ///
+    /// This commonly happens on desktop composition changes such as window
+    /// focus switches, resolution changes, or DWM recomposition events.
+    /// Returns `Ok(None)` on success so the caller retries on the next tick.
+    fn recover_from_access_lost(&mut self) -> Result<Option<CapturedFrame>, CaptureError> {
+        // Drop the outstanding frame release (the old duplication is invalid).
+        self.outstanding_release = None;
+
+        // Brief sleep to let the desktop compositor settle before recreating.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        match unsafe { self.output.DuplicateOutput(&self.device) } {
+            Ok(new_duplication) => {
+                self.duplication = new_duplication;
+                self.access_lost_recoveries += 1;
+                Ok(None)
+            }
+            Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST => {
+                // Still not ready — caller will retry on the next acquire_frame call.
+                // Keep the old (invalid) duplication; next AcquireNextFrame will
+                // trigger another recovery attempt.
+                Ok(None)
+            }
+            Err(error) => Err(map_duplication_error(
+                "IDXGIOutput1::DuplicateOutput (recovery)",
+                error,
+            )),
+        }
     }
 }
 

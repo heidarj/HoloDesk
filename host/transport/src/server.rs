@@ -444,6 +444,8 @@ fn run_video_stream_worker(
 
     let mut packetizer = H264DatagramPacketizer::default();
     let mut frames_sent: u64 = 0;
+    let mut last_frame_time = Instant::now();
+    let mut last_recoveries: u32 = 0;
     send_encoded_access_units(
         &connection,
         &video_config,
@@ -455,8 +457,38 @@ fn run_video_stream_worker(
 
     while !stop_requested.load(Ordering::Relaxed) {
         let Some(frame) = capture.acquire_frame().map_err(TransportError::Capture)? else {
+            // Check for prolonged stall (no frames acquired)
+            let stall_secs = last_frame_time.elapsed().as_secs();
+            if stall_secs > 0 && stall_secs % 2 == 0 {
+                let recoveries = capture.access_lost_recoveries();
+                if recoveries != last_recoveries {
+                    info!(
+                        recoveries,
+                        stall_secs,
+                        "host video: DXGI access-lost recovered, waiting for frames"
+                    );
+                    last_recoveries = recoveries;
+                }
+                if stall_secs == 2 {
+                    warn!(
+                        stall_secs,
+                        recoveries,
+                        "host video: no frames for 2s"
+                    );
+                }
+            }
             continue;
         };
+        last_frame_time = Instant::now();
+        let recoveries = capture.access_lost_recoveries();
+        if recoveries != last_recoveries {
+            info!(
+                recoveries,
+                frames_sent,
+                "host video: resumed after access-lost recovery"
+            );
+            last_recoveries = recoveries;
+        }
         let access_units = encoder.encode(&frame).map_err(TransportError::Encode)?;
         send_encoded_access_units(
             &connection,
@@ -470,7 +502,11 @@ fn run_video_stream_worker(
         }
     }
 
-    info!(frames_sent, "host video: worker stopped normally");
+    info!(
+        frames_sent,
+        access_lost_recoveries = capture.access_lost_recoveries(),
+        "host video: worker stopped normally"
+    );
     Ok(())
 }
 

@@ -197,6 +197,9 @@ pub trait CaptureSession {
 
     fn acquire_frame(&mut self) -> Result<Option<CapturedFrame>, CaptureError>;
 
+    /// Number of times the session recovered from access-lost errors.
+    fn access_lost_recoveries(&self) -> u32 { 0 }
+
     #[cfg(windows)]
     fn d3d11_device(&self) -> ID3D11Device;
 }
