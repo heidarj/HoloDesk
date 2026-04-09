@@ -25,7 +25,7 @@ use tokio::{
     task::JoinHandle,
     time::{sleep, timeout},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use holobridge_auth::{
     AuthConfig, AuthError, AuthorizedUserStore, ResumeTokenService, TokenValidator,
@@ -491,12 +491,6 @@ impl ActiveVideoStream {
                     handle.abort();
                 });
         }
-    }
-
-    fn detach(self) {
-        tokio::spawn(async move {
-            self.join().await;
-        });
     }
 
     async fn join(self) {
@@ -1286,7 +1280,7 @@ async fn run_server_control_stream(
     let pointer_shape_send = Arc::clone(&send);
     let pointer_shape_task = tokio::spawn(async move {
         while let Some(message) = pointer_shape_receiver.recv().await {
-            info!(
+            debug!(
                 kind = message.kind(),
                 "host transport sending control message"
             );
@@ -1316,13 +1310,13 @@ async fn run_server_control_stream(
         if let ControlMessage::Hello { capabilities, .. } = &message {
             client_capabilities = capabilities.clone();
         }
-        info!(
+        debug!(
             kind = message.kind(),
             "host transport received control message"
         );
         let (responses, _handshake_action) = protocol.on_receive(message)?;
         for response in &responses {
-            info!(
+            debug!(
                 kind = response.kind(),
                 "host transport sending control message"
             );
@@ -1334,7 +1328,7 @@ async fn run_server_control_stream(
         info!("host transport waiting for session handshake");
         let handshake_messages = read_messages(&mut recv, &mut accumulator).await?;
         for message in handshake_messages {
-            info!(
+            debug!(
                 kind = message.kind(),
                 "host transport received control message"
             );
@@ -1524,7 +1518,7 @@ async fn run_server_control_stream(
 
     if server_initiated_close && protocol.hello_exchanged() {
         let goodbye = protocol.initiate_goodbye("server-initiated-close");
-        info!(
+        debug!(
             kind = goodbye.kind(),
             "host transport sending control message"
         );
@@ -1544,7 +1538,7 @@ async fn run_server_control_stream(
             }
             Ok(messages) => {
                 for message in messages {
-                    info!(
+                    debug!(
                         kind = message.kind(),
                         "host transport received control message"
                     );
@@ -1605,9 +1599,9 @@ async fn run_server_control_stream(
         info!(
             orderly_shutdown = protocol.orderly_shutdown_complete(),
             unexpected_disconnect,
-            "host video: cleanup detached from control stream"
+            "host video: stopping video worker before releasing connection"
         );
-        video_stream.detach();
+        video_stream.join().await;
     }
     if let Some(input_datagram_task) = input_datagram_task {
         input_datagram_task.abort();

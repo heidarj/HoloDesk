@@ -202,3 +202,10 @@ struct StreamSessionView: View {
         return CGSize(width: fittedWidth, height: fittedWidth / aspectRatio)
     }
 }
+
+#if DEBUG
+#Preview {
+    StreamSessionView()
+        .environment(SessionManager(preview: .connected(userDisplayName: "Preview User")))
+}
+#endif

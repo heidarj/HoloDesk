@@ -31,15 +31,18 @@ if ($VerbosePreference -eq 'Continue') {
     $env:HOLOBRIDGE_CAPTURE_TRACE = '1'
     $env:HOLOBRIDGE_VIDEO_TRACE = '1'
     $env:HOLOBRIDGE_ENCODE_TRACE = '1'
+    $env:RUST_LOG = 'debug'
     Write-Host 'Enabled host traces:'
     Write-Host '  HOLOBRIDGE_CAPTURE_TRACE=1'
     Write-Host '  HOLOBRIDGE_VIDEO_TRACE=1'
     Write-Host '  HOLOBRIDGE_ENCODE_TRACE=1'
+    Write-Host '  RUST_LOG=debug'
     Write-Host '  RUST_BACKTRACE=1'
 } else {
     Remove-Item Env:HOLOBRIDGE_CAPTURE_TRACE -ErrorAction SilentlyContinue
     Remove-Item Env:HOLOBRIDGE_VIDEO_TRACE -ErrorAction SilentlyContinue
     Remove-Item Env:HOLOBRIDGE_ENCODE_TRACE -ErrorAction SilentlyContinue
+    Remove-Item Env:RUST_LOG -ErrorAction SilentlyContinue
     Write-Host 'Running with normal host logging. Use -Verbose to enable deep capture/video/encode traces.'
 }
 

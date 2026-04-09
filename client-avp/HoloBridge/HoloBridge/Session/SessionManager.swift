@@ -50,6 +50,20 @@ public final class SessionManager {
     @ObservationIgnored private var remoteInputFocusState = false
     @ObservationIgnored private var nextInputSequenceValue: UInt64 = 1
 
+    #if DEBUG
+    /// Creates a lightweight SessionManager for Xcode previews.
+    /// No network transport is configured — `sessionClient` stays nil.
+    init(preview state: SessionState) {
+        let renderer = VideoRenderer()
+        self.authMode = .apple
+        self.videoRenderer = renderer
+        self.videoPipeline = VideoStreamPipeline(renderer: renderer)
+        self.state = state
+        self.streamWindowRequested = state.isConnected
+        renderer.updateFormat(width: 1920, height: 1080)
+    }
+    #endif
+
     public init(authMode: AuthMode? = nil) {
         let renderer = VideoRenderer()
         let videoPipeline = VideoStreamPipeline(renderer: renderer)

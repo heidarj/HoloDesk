@@ -339,10 +339,9 @@ impl InputBackend for PlatformInputBackend {
 
         unsafe {
             SetCursorPos(desktop_x, desktop_y)
-                .ok()
                 .map_err(|error| InputError::WindowsApi {
                     operation: "SetCursorPos",
-                    detail: error.message().to_string_lossy(),
+                    detail: error.message(),
                 })
         }
     }
@@ -386,7 +385,7 @@ impl InputBackend for PlatformInputBackend {
             let error = windows::core::Error::from_win32();
             return Err(InputError::WindowsApi {
                 operation: "SendInput(mouse button)",
-                detail: error.message().to_string_lossy(),
+                detail: error.message(),
             });
         }
 
@@ -444,7 +443,7 @@ impl InputBackend for PlatformInputBackend {
             let error = windows::core::Error::from_win32();
             return Err(InputError::WindowsApi {
                 operation: "SendInput(mouse wheel)",
-                detail: error.message().to_string_lossy(),
+                detail: error.message(),
             });
         }
 
@@ -485,7 +484,7 @@ impl InputBackend for PlatformInputBackend {
             let error = windows::core::Error::from_win32();
             return Err(InputError::WindowsApi {
                 operation: "SendInput(keyboard)",
-                detail: error.message().to_string_lossy(),
+                detail: error.message(),
             });
         }
 
