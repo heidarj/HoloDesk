@@ -255,6 +255,47 @@ final class SessionClientTests: XCTestCase {
             ]
         )
     }
+
+    func testInputSendApisUseExpectedTransportShapes() async throws {
+        let transport = MockTransportClient()
+        transport.enqueueIncoming(.helloAck())
+        transport.enqueueIncoming(
+            .authResult(
+                success: true,
+                message: "authenticated",
+                sessionID: "session-1",
+                resumeToken: "resume-1",
+                resumeTokenTTLSeconds: 3600
+            )
+        )
+
+        let client = SessionClient(transportClientFactory: { _ in transport })
+        _ = try await client.connect(
+            to: SessionEndpoint(host: "127.0.0.1", port: 4433),
+            identityTokenSupplier: { "token" },
+            requestVideo: true
+        )
+
+        try await client.sendPointerMotion(x: 12, y: 34, sequence: 1)
+        try await client.sendPointerButton(button: "left", phase: "down", x: 12, y: 34, sequence: 2)
+        try await client.sendWheel(deltaX: 0, deltaY: -120, x: 12, y: 34, sequence: 3)
+        try await client.sendKey(keyCode: 4, phase: "up", modifiers: 3)
+        try await client.setInputFocus(active: false)
+
+        XCTAssertEqual(
+            transport.sentDatagrams(),
+            [InputPointerDatagram(sequence: 1, x: 12, y: 34).encode()]
+        )
+        XCTAssertEqual(
+            transport.sentMessages().suffix(4),
+            [
+                .pointerButton(button: "left", phase: "down", x: 12, y: 34, sequence: 2),
+                .pointerWheel(deltaX: 0, deltaY: -120, x: 12, y: 34, sequence: 3),
+                .keyboardKey(keyCode: 4, phase: "up", modifiers: 3),
+                .inputFocus(active: false),
+            ]
+        )
+    }
 }
 
 private final class MockTransportFactory: @unchecked Sendable {
@@ -277,6 +318,7 @@ private final class MockTransportClient: TransportClient, @unchecked Sendable {
     private struct State {
         var incomingMessages: [ControlMessage] = []
         var sentMessages: [ControlMessage] = []
+        var sentDatagrams: [Data] = []
         var bufferedDatagrams: [Data] = []
         var datagramContinuation: AsyncThrowingStream<Data, Error>.Continuation?
         var pendingReceive: CheckedContinuation<ControlMessage, Error>?
@@ -309,6 +351,10 @@ private final class MockTransportClient: TransportClient, @unchecked Sendable {
 
     func sentMessages() -> [ControlMessage] {
         state.withLock { $0.sentMessages }
+    }
+
+    func sentDatagrams() -> [Data] {
+        state.withLock { $0.sentDatagrams }
     }
 
     func yieldDatagram(_ data: Data) {
@@ -366,6 +412,10 @@ private final class MockTransportClient: TransportClient, @unchecked Sendable {
 
     func send(_ message: ControlMessage) async throws {
         state.withLock { $0.sentMessages.append(message) }
+    }
+
+    func sendDatagram(_ payload: Data) async throws {
+        state.withLock { $0.sentDatagrams.append(payload) }
     }
 
     func sendHello(clientName: String, capabilities: [String]) async throws {

@@ -288,6 +288,15 @@ impl ControlConnection {
                 role: self.role,
                 message_type: "pointer_shape",
             }),
+            ControlMessage::PointerButton { .. }
+            | ControlMessage::PointerWheel { .. }
+            | ControlMessage::KeyboardKey { .. }
+            | ControlMessage::InputFocus { .. } => {
+                if !self.session_established() {
+                    return Err(ConnectionError::AuthNotComplete);
+                }
+                Ok((Vec::new(), None))
+            }
             ControlMessage::Goodbye { .. } => {
                 self.goodbye_received = true;
                 Ok((Vec::new(), None))
@@ -335,7 +344,11 @@ impl ControlConnection {
                 self.auth_success = Some(success);
                 Ok((Vec::new(), None))
             }
-            ControlMessage::PointerShape { .. } => Ok((Vec::new(), None)),
+            ControlMessage::PointerShape { .. }
+            | ControlMessage::PointerButton { .. }
+            | ControlMessage::PointerWheel { .. }
+            | ControlMessage::KeyboardKey { .. }
+            | ControlMessage::InputFocus { .. } => Ok((Vec::new(), None)),
             ControlMessage::Goodbye { .. } => {
                 self.goodbye_received = true;
                 Ok((Vec::new(), None))

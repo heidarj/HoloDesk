@@ -194,24 +194,40 @@ Each milestone is designed to be small enough for an autonomous coding agent to 
 
 ## Milestone 7 – Input Return Path
 
-**Goal:** User input from AVP (pointer, keyboard, scroll) is forwarded to the host and replayed.
+**Goal:** User input from AVP is forwarded to the host and replayed, while the streamed desktop moves into a dedicated stream window with local ornaments and ornament-safe input gating.
 
 **Deliverables:**
-- `client-avp/Input/` – visionOS input capture; encode and send over QUIC control stream
-- `host/input/` – receive input events; replay via `SendInput` or equivalent Win32 API
+- `client-avp/HoloBridge/HoloBridge/Input/` – visionOS input capture for the stream surface only, with local hit-testing, coordinate mapping, and ornament gating
+- `client-avp/HoloBridge/HoloBridge/Windows/` – dedicated stream window view opened from the utility shell via `openWindow` / `dismissWindow`
+- `client-avp/HoloBridge/Packages/HoloBridgeClient/Sources/HoloBridgeClientCore` – explicit input send APIs plus protocol support for input datagrams and reliable input control messages
+- `host/input/` – session-scoped Win32 input replay via `SendInput`, plus pressed-state cleanup on focus loss / disconnect
+- `host/transport/` – post-auth input handling for hybrid transport: pointer motion on QUIC datagrams, discrete input on the reliable control stream
+- `docs/adr/0004-use-hybrid-input-transport-for-return-path.md` – formalize the hybrid input transport and dedicated stream window decision
 
 **Acceptance Criteria:**
-- Pointer movement on AVP moves the cursor on the Windows desktop.
-- Click events on AVP trigger click events on Windows.
-- Scroll events on AVP trigger scroll on Windows.
-- Keyboard input (if applicable) is forwarded correctly.
-- Input latency is low (< 50 ms on local network as a starting target).
+- After connect, the main window remains a utility shell for status / reconnect / disconnect, and the streamed desktop opens in its own window.
+- The stream window preserves the streamed content aspect ratio, and in-session controls live in a SwiftUI `.ornament(...)` instead of inline below the video.
+- Milestone 7 ships one pointer mode: `absolute surface`. Only the visible video content rect is a remote-input target.
+- Pointer motion uses QUIC datagrams (`input-pointer-datagram-v1`) so motion can be coalesced without head-of-line blocking.
+- Pointer button, wheel, keyboard, and focus / capture state use reliable control messages on the QUIC control stream.
+- Reliable pointer button and wheel events include the current `x/y`, and the host repositions before replaying the discrete event.
+- Ornament interaction does not forward clicks or presses to the Windows desktop.
+- On focus loss, disconnect, or failed resume, the host synthesizes the missing button-up / key-up events so no drag or modifier remains stuck.
+- Keyboard support for Milestone 7 is limited to hardware-key forwarding from the focused stream window.
 
 **Validation Steps:**
-1. Move pointer on AVP; confirm cursor moves on host desktop.
-2. Click on a UI element on AVP; confirm the click registers on Windows.
-3. Test scroll; confirm scroll registers on Windows.
-4. Measure input round-trip latency.
+1. Run `cargo test -q -p holobridge-input` and confirm codec, clamping, and stuck-input cleanup coverage passes.
+2. Run `cargo test -q -p holobridge-transport` and `cargo test -q` under `host/` and confirm the new post-auth input transport coverage passes.
+3. Run `swift test --package-path client-avp/HoloBridge/Packages/HoloBridgeClient` and confirm the input codec, bridge, and `SessionClient` transport tests pass.
+4. Run `xcodebuild -project client-avp/HoloBridge/HoloBridge.xcodeproj -scheme HoloBridge -destination 'generic/platform=visionOS Simulator' build` and confirm the utility-shell + stream-window client builds.
+5. On Apple Vision Pro, connect from the utility shell and confirm a separate stream window opens, the surface stays aspect-locked, and controls live only in the ornament.
+6. On Apple Vision Pro, verify pointer move, click, drag, wheel, and hardware keyboard input all replay correctly on Windows.
+7. Verify ornament interaction never produces a remote click, and the first activation event that only focuses the stream window is not forwarded to Windows.
+8. Measure input round-trip latency and correlate client sequence numbers with host logs.
+
+**Notes:**
+- The transport for return input is intentionally hybrid: pointer motion favors latency; button / wheel / keyboard / focus favors reliability.
+- Milestone 7.1 should add relative-trackpad / explicit-capture pointer policies, input-mode switching in the ornament, and explicit text-entry / software-keyboard support.
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Version:** v1  
 **Status:** Design complete, implementation in progress  
-**Last Updated:** Milestone 0
+**Last Updated:** Milestone 7
 
 ---
 
@@ -99,8 +99,8 @@ This is a **remote display product**, not a PCVR product. The Apple Vision Pro r
 | Session setup | Send identity token over QUIC control stream; receive session confirmation |
 | Video receive | Receive H.264 NALU data over QUIC datagrams |
 | Decode | VideoToolbox hardware H.264 decoder; keep frames on GPU (Metal textures) |
-| Display | Present decoded frames as a flat virtual display window in AVP environment |
-| Input capture | Capture pointer/gaze, keyboard, scroll from visionOS; forward over QUIC control stream |
+| Display | Present decoded frames in a dedicated flat stream window; keep connect / status UI in a separate utility shell window |
+| Input capture | Capture hover / tap / drag / wheel / hardware keyboard input from the visible video surface only; keep ornaments local-only |
 | Reconnect | Use host-issued resume token to reconnect after QUIC interruption |
 
 ---
@@ -161,13 +161,37 @@ UDP / IP
 
 | Channel | Mechanism | Purpose |
 |---|---|---|
-| Control | QUIC bidirectional stream | Session setup, auth, input events, control messages |
+| Control | QUIC bidirectional stream | Session setup, auth, resume, discrete input events, focus state, control messages |
 | Video | QUIC unreliable datagrams | Video frame delivery (low latency, no HOL blocking) |
+| Input pointer motion | QUIC unreliable datagrams | Coalesced absolute pointer motion for low-latency cursor updates |
 | Resume | QUIC control stream | Resume token exchange |
 
 ### Why QUIC Datagrams for Video
 
 QUIC datagrams are unreliable (like UDP) but encrypted and authenticated by the QUIC session. Dropped frames are acceptable for low-latency video; retransmission would add unacceptable latency. The encoder produces independently-decodable frames (IDR/keyframes and P-frames with periodic IDR refresh) so that a lost frame results in a brief artifact, not a stream stall.
+
+### Why Hybrid Transport for Input
+
+The input return path is split by failure sensitivity:
+
+- **Pointer motion** uses QUIC datagrams so hover and drag updates can be coalesced and never queue behind reliable traffic.
+- **Pointer button, wheel, keyboard, and input-focus state** use the reliable control stream so discrete actions are not dropped or reordered.
+- Every reliable pointer button / wheel event carries the current `x/y`, so the host can reposition first and replay the discrete action even if a prior motion datagram was lost.
+
+This keeps motion latency low without sacrificing correctness for clicks, scrolling, keyboard state, or focus transitions.
+
+---
+
+## Dedicated Stream Window and Input Gating
+
+- The AVP client keeps the connect / status flow in a utility shell window.
+- A successful session opens a separate stream window whose content is only the aspect-locked video surface plus native cursor overlay.
+- Stream controls live in a SwiftUI ornament attached to that stream window, not inside the video surface.
+- Remote input is generated only from the visible video content rect, never from the full window bounds.
+- The client should not depend on a special ornament-focus API. Instead:
+  - gestures are attached only to the video surface
+  - ornament interaction suppresses outbound remote input and updates host-side input focus
+- The host maintains pressed-button and pressed-key state per session and releases held input on focus loss, disconnect, or failed resume so stuck drags and modifiers do not persist.
 
 ---
 

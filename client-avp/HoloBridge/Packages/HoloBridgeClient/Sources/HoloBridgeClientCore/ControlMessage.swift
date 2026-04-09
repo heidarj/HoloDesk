@@ -9,6 +9,10 @@ public enum ControlMessageType: String, Codable, Sendable {
     case authResult = "auth_result"
     case resumeResult = "resume_result"
     case pointerShape = "pointer_shape"
+    case pointerButton = "pointer_button"
+    case pointerWheel = "pointer_wheel"
+    case keyboardKey = "keyboard_key"
+    case inputFocus = "input_focus"
 }
 
 public enum ControlMessageCodecError: Error, LocalizedError, Sendable, Equatable {
@@ -41,6 +45,7 @@ public struct ControlMessage: Codable, Sendable, Equatable {
     public static let videoDatagramCapability = "video-datagram-h264-v1"
     public static let pointerDatagramCapability = "pointer-datagram-v1"
     public static let pointerStreamCapability = "pointer-stream-v1"
+    public static let inputPointerDatagramCapability = "input-pointer-datagram-v1"
 
     public let type: ControlMessageType
     public let protocolVersion: Int?
@@ -60,6 +65,16 @@ public struct ControlMessage: Codable, Sendable, Equatable {
     public let hotspotX: Int32?
     public let hotspotY: Int32?
     public let pixelsRGBABase64: String?
+    public let button: String?
+    public let phase: String?
+    public let x: Int32?
+    public let y: Int32?
+    public let sequence: UInt64?
+    public let deltaX: Int32?
+    public let deltaY: Int32?
+    public let keyCode: UInt16?
+    public let modifiers: UInt32?
+    public let active: Bool?
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -80,6 +95,16 @@ public struct ControlMessage: Codable, Sendable, Equatable {
         case hotspotX = "hotspot_x"
         case hotspotY = "hotspot_y"
         case pixelsRGBABase64 = "pixels_rgba_base64"
+        case button
+        case phase
+        case x
+        case y
+        case sequence
+        case deltaX = "delta_x"
+        case deltaY = "delta_y"
+        case keyCode = "key_code"
+        case modifiers
+        case active
     }
 
     public init(
@@ -100,7 +125,17 @@ public struct ControlMessage: Codable, Sendable, Equatable {
         height: UInt32? = nil,
         hotspotX: Int32? = nil,
         hotspotY: Int32? = nil,
-        pixelsRGBABase64: String? = nil
+        pixelsRGBABase64: String? = nil,
+        button: String? = nil,
+        phase: String? = nil,
+        x: Int32? = nil,
+        y: Int32? = nil,
+        sequence: UInt64? = nil,
+        deltaX: Int32? = nil,
+        deltaY: Int32? = nil,
+        keyCode: UInt16? = nil,
+        modifiers: UInt32? = nil,
+        active: Bool? = nil
     ) {
         self.type = type
         self.protocolVersion = protocolVersion
@@ -120,6 +155,16 @@ public struct ControlMessage: Codable, Sendable, Equatable {
         self.hotspotX = hotspotX
         self.hotspotY = hotspotY
         self.pixelsRGBABase64 = pixelsRGBABase64
+        self.button = button
+        self.phase = phase
+        self.x = x
+        self.y = y
+        self.sequence = sequence
+        self.deltaX = deltaX
+        self.deltaY = deltaY
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+        self.active = active
     }
 
     public static func hello(
@@ -205,6 +250,57 @@ public struct ControlMessage: Codable, Sendable, Equatable {
             hotspotY: hotspotY,
             pixelsRGBABase64: pixelsRGBABase64
         )
+    }
+
+    public static func pointerButton(
+        button: String,
+        phase: String,
+        x: Int32,
+        y: Int32,
+        sequence: UInt64
+    ) -> ControlMessage {
+        ControlMessage(
+            type: .pointerButton,
+            button: button,
+            phase: phase,
+            x: x,
+            y: y,
+            sequence: sequence
+        )
+    }
+
+    public static func pointerWheel(
+        deltaX: Int32,
+        deltaY: Int32,
+        x: Int32,
+        y: Int32,
+        sequence: UInt64
+    ) -> ControlMessage {
+        ControlMessage(
+            type: .pointerWheel,
+            x: x,
+            y: y,
+            sequence: sequence,
+            deltaX: deltaX,
+            deltaY: deltaY
+        )
+    }
+
+    public static func keyboardKey(
+        keyCode: UInt16,
+        phase: String,
+        modifiers: UInt32
+    ) -> ControlMessage {
+        ControlMessage(
+            type: .keyboardKey,
+            phase: phase,
+            keyCode: keyCode,
+            modifiers: modifiers
+        )
+    }
+
+    public static func inputFocus(active: Bool) -> ControlMessage {
+        ControlMessage(type: .inputFocus, active: active)
     }
 
     public var kind: String {

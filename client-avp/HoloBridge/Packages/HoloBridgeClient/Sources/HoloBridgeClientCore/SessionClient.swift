@@ -41,6 +41,7 @@ public enum SessionClientState: Equatable, Sendable {
 public enum SessionClientError: Error, LocalizedError {
     case invalidSessionHandshake(String)
     case authRejected(String)
+    case notConnected
 
     public var errorDescription: String? {
         switch self {
@@ -48,6 +49,8 @@ public enum SessionClientError: Error, LocalizedError {
             return "Invalid session handshake: \(detail)"
         case .authRejected(let detail):
             return "Authentication failed: \(detail)"
+        case .notConnected:
+            return "The session is not connected"
         }
     }
 }
@@ -199,6 +202,90 @@ public actor SessionClient {
 
         wasUserInitiatedDisconnect = false
         await transport.close(reason: nil)
+    }
+
+    public func sendPointerMotion(
+        x: Int32,
+        y: Int32,
+        sequence: UInt64
+    ) async throws {
+        guard state.isConnected, let transport else {
+            throw SessionClientError.notConnected
+        }
+
+        try await transport.sendDatagram(
+            InputPointerDatagram(sequence: sequence, x: x, y: y).encode()
+        )
+    }
+
+    public func sendPointerButton(
+        button: String,
+        phase: String,
+        x: Int32,
+        y: Int32,
+        sequence: UInt64
+    ) async throws {
+        guard state.isConnected, let transport else {
+            throw SessionClientError.notConnected
+        }
+
+        try await transport.send(
+            .pointerButton(
+                button: button,
+                phase: phase,
+                x: x,
+                y: y,
+                sequence: sequence
+            )
+        )
+    }
+
+    public func sendWheel(
+        deltaX: Int32,
+        deltaY: Int32,
+        x: Int32,
+        y: Int32,
+        sequence: UInt64
+    ) async throws {
+        guard state.isConnected, let transport else {
+            throw SessionClientError.notConnected
+        }
+
+        try await transport.send(
+            .pointerWheel(
+                deltaX: deltaX,
+                deltaY: deltaY,
+                x: x,
+                y: y,
+                sequence: sequence
+            )
+        )
+    }
+
+    public func sendKey(
+        keyCode: UInt16,
+        phase: String,
+        modifiers: UInt32
+    ) async throws {
+        guard state.isConnected, let transport else {
+            throw SessionClientError.notConnected
+        }
+
+        try await transport.send(
+            .keyboardKey(
+                keyCode: keyCode,
+                phase: phase,
+                modifiers: modifiers
+            )
+        )
+    }
+
+    public func setInputFocus(active: Bool) async throws {
+        guard state.isConnected, let transport else {
+            throw SessionClientError.notConnected
+        }
+
+        try await transport.send(.inputFocus(active: active))
     }
 
     private func attemptResume(
@@ -491,6 +578,7 @@ public actor SessionClient {
             ControlMessage.videoDatagramCapability,
             ControlMessage.pointerDatagramCapability,
             ControlMessage.pointerStreamCapability,
+            ControlMessage.inputPointerDatagramCapability,
         ]
     }
 }

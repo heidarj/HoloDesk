@@ -6,6 +6,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const DEFAULT_ALPN: &str = "holobridge-m2";
 pub const CONTROL_STREAM_CAPABILITY: &str = "control-stream-v1";
 pub const POINTER_STREAM_CAPABILITY: &str = "pointer-stream-v1";
+pub const INPUT_POINTER_DATAGRAM_CAPABILITY: &str = "input-pointer-datagram-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -68,6 +69,31 @@ pub enum ControlMessage {
         hotspot_y: i32,
         #[serde(rename = "pixels_rgba_base64")]
         pixels_rgba_base64: String,
+    },
+    PointerButton {
+        button: String,
+        phase: String,
+        x: i32,
+        y: i32,
+        sequence: u64,
+    },
+    PointerWheel {
+        #[serde(rename = "delta_x")]
+        delta_x: i32,
+        #[serde(rename = "delta_y")]
+        delta_y: i32,
+        x: i32,
+        y: i32,
+        sequence: u64,
+    },
+    KeyboardKey {
+        #[serde(rename = "key_code")]
+        key_code: u16,
+        phase: String,
+        modifiers: u32,
+    },
+    InputFocus {
+        active: bool,
     },
 }
 
@@ -182,6 +208,54 @@ impl ControlMessage {
         }
     }
 
+    pub fn pointer_button(
+        button: impl Into<String>,
+        phase: impl Into<String>,
+        x: i32,
+        y: i32,
+        sequence: u64,
+    ) -> Self {
+        Self::PointerButton {
+            button: button.into(),
+            phase: phase.into(),
+            x,
+            y,
+            sequence,
+        }
+    }
+
+    pub fn pointer_wheel(
+        delta_x: i32,
+        delta_y: i32,
+        x: i32,
+        y: i32,
+        sequence: u64,
+    ) -> Self {
+        Self::PointerWheel {
+            delta_x,
+            delta_y,
+            x,
+            y,
+            sequence,
+        }
+    }
+
+    pub fn keyboard_key(
+        key_code: u16,
+        phase: impl Into<String>,
+        modifiers: u32,
+    ) -> Self {
+        Self::KeyboardKey {
+            key_code,
+            phase: phase.into(),
+            modifiers,
+        }
+    }
+
+    pub fn input_focus(active: bool) -> Self {
+        Self::InputFocus { active }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Hello { .. } => "hello",
@@ -192,6 +266,10 @@ impl ControlMessage {
             Self::AuthResult { .. } => "auth_result",
             Self::ResumeResult { .. } => "resume_result",
             Self::PointerShape { .. } => "pointer_shape",
+            Self::PointerButton { .. } => "pointer_button",
+            Self::PointerWheel { .. } => "pointer_wheel",
+            Self::KeyboardKey { .. } => "keyboard_key",
+            Self::InputFocus { .. } => "input_focus",
         }
     }
 
@@ -208,7 +286,11 @@ impl ControlMessage {
             | Self::ResumeSession { .. }
             | Self::AuthResult { .. }
             | Self::ResumeResult { .. }
-            | Self::PointerShape { .. } => None,
+            | Self::PointerShape { .. }
+            | Self::PointerButton { .. }
+            | Self::PointerWheel { .. }
+            | Self::KeyboardKey { .. }
+            | Self::InputFocus { .. } => None,
         }
     }
 }
@@ -342,5 +424,21 @@ mod tests {
 
         assert_eq!(decoded, message);
         assert_eq!(decoded.protocol_version(), None);
+    }
+
+    #[test]
+    fn input_control_messages_roundtrip() {
+        let messages = [
+            ControlMessage::pointer_button("left", "down", 100, 200, 7),
+            ControlMessage::pointer_wheel(0, -120, 101, 201, 8),
+            ControlMessage::keyboard_key(0x04, "up", 0x03),
+            ControlMessage::input_focus(false),
+        ];
+
+        for message in messages {
+            let encoded = ControlMessageCodec::encode(&message).unwrap();
+            let decoded = ControlMessageCodec::decode_frame(&encoded).unwrap();
+            assert_eq!(decoded, message);
+        }
     }
 }

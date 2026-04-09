@@ -83,7 +83,26 @@ private final class MockQuicBridge: QuicConnectionBridging, @unchecked Sendable 
     var onTermination: ((Error?) -> Void)?
 
     func start(_ completion: @escaping (Error?) -> Void) {
-        state.withLock { $0.startCompletion = completion }
+        let pendingStartResult = state.withLock { state -> PendingStartResult? in
+            if let pendingStartResult = state.pendingStartResult {
+                state.pendingStartResult = nil
+                return pendingStartResult
+            }
+
+            state.startCompletion = completion
+            return nil
+        }
+
+        guard let pendingStartResult else {
+            return
+        }
+
+        switch pendingStartResult {
+        case .success:
+            completion(nil)
+        case .failure(let error):
+            completion(error)
+        }
     }
 
     func sendControlPayload(_ payload: Data, completion: @escaping (Error?) -> Void) {
@@ -103,7 +122,15 @@ private final class MockQuicBridge: QuicConnectionBridging, @unchecked Sendable 
     func completeStart(with error: Error?) {
         let completion = state.withLock { state -> ((Error?) -> Void)? in
             let completion = state.startCompletion
-            state.startCompletion = nil
+            if completion == nil {
+                if let error {
+                    state.pendingStartResult = .failure(error)
+                } else {
+                    state.pendingStartResult = .success
+                }
+            } else {
+                state.startCompletion = nil
+            }
             return completion
         }
         completion?(error)
@@ -126,8 +153,14 @@ private final class MockQuicBridge: QuicConnectionBridging, @unchecked Sendable 
     }
 }
 
+private enum PendingStartResult {
+    case success
+    case failure(Error)
+}
+
 private struct MockState {
     var startCompletion: ((Error?) -> Void)?
+    var pendingStartResult: PendingStartResult?
     var sentControlPayloads: [Data] = []
     var sentDatagramPayloads: [Data] = []
     var closeReasons: [String?] = []

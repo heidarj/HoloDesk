@@ -10,11 +10,13 @@ use holobridge_encode::EncodedAccessUnit;
 
 pub const VIDEO_DATAGRAM_CAPABILITY: &str = "video-datagram-h264-v1";
 pub const POINTER_DATAGRAM_CAPABILITY: &str = "pointer-datagram-v1";
+pub const INPUT_POINTER_DATAGRAM_CAPABILITY: &str = "input-pointer-datagram-v1";
 pub const MEDIA_DATAGRAM_VERSION: u8 = 1;
 pub const MEDIA_DATAGRAM_HEADER_LEN: usize = 32;
 pub const POINTER_DATAGRAM_HEADER_LEN: usize = 24;
 pub const MEDIA_DATAGRAM_KIND_VIDEO: u8 = 0;
 pub const MEDIA_DATAGRAM_KIND_POINTER_STATE: u8 = 1;
+pub const MEDIA_DATAGRAM_KIND_INPUT_POINTER_MOTION: u8 = 2;
 const KEYFRAME_FLAG: u8 = 0x01;
 const POINTER_VISIBLE_FLAG: u8 = 0x01;
 
@@ -43,6 +45,13 @@ pub struct PointerStateDatagram {
     pub x: i32,
     pub y: i32,
     pub visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputPointerDatagram {
+    pub sequence: u64,
+    pub x: i32,
+    pub y: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +195,40 @@ impl PointerStateDatagram {
             x: i32::from_be_bytes(datagram[12..16].try_into().expect("pointer x")),
             y: i32::from_be_bytes(datagram[16..20].try_into().expect("pointer y")),
             visible: (datagram[1] & POINTER_VISIBLE_FLAG) != 0,
+        })
+    }
+}
+
+impl InputPointerDatagram {
+    pub fn encode(&self) -> [u8; POINTER_DATAGRAM_HEADER_LEN] {
+        let mut encoded = [0u8; POINTER_DATAGRAM_HEADER_LEN];
+        encoded[0] = MEDIA_DATAGRAM_VERSION;
+        encoded[2] = MEDIA_DATAGRAM_KIND_INPUT_POINTER_MOTION;
+        encoded[4..12].copy_from_slice(&self.sequence.to_be_bytes());
+        encoded[12..16].copy_from_slice(&self.x.to_be_bytes());
+        encoded[16..20].copy_from_slice(&self.y.to_be_bytes());
+        encoded
+    }
+
+    pub fn decode(datagram: &[u8]) -> Result<Self, MediaDatagramError> {
+        if datagram.len() < POINTER_DATAGRAM_HEADER_LEN {
+            return Err(MediaDatagramError::PointerDatagramTooShort {
+                actual: datagram.len(),
+            });
+        }
+        let version = datagram[0];
+        if version != MEDIA_DATAGRAM_VERSION {
+            return Err(MediaDatagramError::UnsupportedVersion { actual: version });
+        }
+        let packet_kind = datagram[2];
+        if packet_kind != MEDIA_DATAGRAM_KIND_INPUT_POINTER_MOTION {
+            return Err(MediaDatagramError::UnexpectedPacketKind { actual: packet_kind });
+        }
+
+        Ok(Self {
+            sequence: u64::from_be_bytes(datagram[4..12].try_into().expect("pointer sequence")),
+            x: i32::from_be_bytes(datagram[12..16].try_into().expect("pointer x")),
+            y: i32::from_be_bytes(datagram[16..20].try_into().expect("pointer y")),
         })
     }
 }
@@ -448,8 +491,8 @@ impl Error for MediaDatagramError {}
 mod tests {
     use super::{
         negotiated_datagram_payload_limit, H264DatagramPacketizer, H264DatagramReassembler,
-        MediaDatagramHeader, MediaDatagramError, PointerStateDatagram, ReassemblerConfig,
-        MEDIA_DATAGRAM_HEADER_LEN,
+        InputPointerDatagram, MediaDatagramError, MediaDatagramHeader,
+        PointerStateDatagram, ReassemblerConfig, MEDIA_DATAGRAM_HEADER_LEN,
     };
     use std::time::{Duration, Instant};
 
@@ -564,6 +607,18 @@ mod tests {
         };
 
         let decoded = PointerStateDatagram::decode(&datagram.encode()).unwrap();
+        assert_eq!(decoded, datagram);
+    }
+
+    #[test]
+    fn input_pointer_datagram_roundtrip_preserves_fields() {
+        let datagram = InputPointerDatagram {
+            sequence: 27,
+            x: 640,
+            y: 480,
+        };
+
+        let decoded = InputPointerDatagram::decode(&datagram.encode()).unwrap();
         assert_eq!(decoded, datagram);
     }
 }

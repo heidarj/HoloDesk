@@ -4,9 +4,9 @@
 
 ## Current Milestone
 
-**Milestone 6 – in progress**
+**Milestone 7 – implementation landed, pending on-device acceptance**
 
-Milestones 1 through 5 are complete, and the Milestone 6 implementation has now landed in the repo. The Rust host can advertise `video-datagram-h264-v1`, start a per-connection video worker after auth or resume, fragment Annex-B H.264 access units over QUIC datagrams, and reassemble them in loopback tests. The Apple client code is now split into a shared local Swift package plus a thinner visionOS shell, and the repo includes a new macOS smoke executable for fast auth/resume/datagram-loop debugging. However, end-to-end Apple-side QUIC media validation is still blocked by the current `Network.framework` QUIC datagram/runtime behavior on macOS and visionOS.
+Milestone 6 is now validated locally again on macOS, and the Milestone 7 code path has landed across the host, shared Swift package, and canonical visionOS app. The host now accepts hybrid return input (pointer motion by datagram, discrete input by reliable control messages), replays input through a new session-scoped Win32 input layer, and releases stuck buttons / keys on focus loss or disconnect. The Apple client now opens a dedicated stream window, keeps the original window as a utility shell, moves controls into a stream-window ornament, and captures remote input only from the visible video surface. Automated validation is green; the remaining work is real Apple Vision Pro acceptance for ornament interaction, activation-event suppression, and gesture tuning.
 
 ---
 
@@ -20,11 +20,19 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 | 3 | Stream lifecycle + resume token | ✅ |
 | 4 | Display enumeration + DXGI capture | ✅ |
 | 5 | Media Foundation H.264 encode path | ✅ |
+| 6 | Video transport + AVP decode / display | ✅ |
 
 ---
 
 ## Latest Changes
 
+- Added `host/input/` as a new workspace crate with a safe session-scoped input API over Win32 `SendInput`, coordinate clamping, per-session pressed-button / pressed-key tracking, and cleanup on focus loss / disconnect.
+- Extended the host and shared Swift protocol layers with `input-pointer-datagram-v1`, media datagram kind `2` for pointer motion, and reliable `pointer_button`, `pointer_wheel`, `keyboard_key`, and `input_focus` control messages.
+- Updated the Rust transport server so post-auth control handling now accepts the new input messages, starts an input datagram task when the client advertises support, and feeds both channels into the new host input session.
+- Extended `SessionClient` / `TransportClient` with explicit `sendPointerMotion`, `sendPointerButton`, `sendWheel`, `sendKey`, and `setInputFocus` APIs, and added matching codec / loopback coverage in the Swift and Rust test suites.
+- Added a dedicated visionOS stream window plus `RemoteInputCaptureView`, keeping the main `ContentView` as a utility shell while moving in-session controls into an ornament attached to the stream window.
+- Added client-side remote-input gating based on stream-window visibility and ornament interaction, so the host receives `input_focus` updates and remote input is not generated outside the video surface.
+- Fixed a race in the QUIC bridge test mock that could complete the bridge before `start(_:)` registered its callback, making the shared Swift package tests deterministic again.
 - Updated `scripts/e2e.ps1` so normal runs keep standard host logging while `.\scripts\e2e.ps1 -Verbose` enables the deep capture/video/encode trace path, panic backtraces, and a timestamped host log under `artifacts/e2e/`.
 - Added pointer-aware DXGI capture metadata on the host: capture frames now distinguish image-only, pointer-only, and combined updates, and include pointer position plus optional pointer-shape payloads.
 - Added a host-side pointer overlay transport path: pointer position/visibility now travels as a lightweight QUIC datagram, pointer-shape changes travel as reliable control messages, and pointer-only desktop duplication updates no longer have to traverse the H.264 encoder when the client negotiated pointer overlay support.
@@ -141,13 +149,24 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 - [x] Host loopback validation covers header encode/decode, fragmentation/reassembly, out-of-order fragments, incomplete-frame expiry, auth -> video datagram receive, and resume-triggered media restart on a new QUIC connection.
 - [ ] `scripts/client-mac-smoke-local.sh` currently fails at the Apple QUIC client transport stage on macOS before `hello`/`hello_ack` completes, even against the synthetic-video Rust host. The latest observed error after extracting the shared client core is `QUIC connection failed: POSIXErrorCode(rawValue: 50): Network is down`.
 - [ ] Native Windows `scripts/host-video-smoke.ps1` did not complete successfully in the current desktop session on 2026-04-05: `IDXGIOutput1::DuplicateOutput` failed with `0x80070005 (Access is denied)`, causing the host to close the QUIC connection before the smoke client received video datagrams.
-- [ ] `xcodebuild` validation for the canonical visionOS target has not been run from this Windows desktop. The app-side Milestone 6 implementation is best-effort and still requires a later Mac / Apple Vision Pro build-and-debug pass.
+- [x] `xcodebuild -project client-avp/HoloBridge/HoloBridge.xcodeproj -scheme HoloBridge -destination 'generic/platform=visionOS Simulator' build` was rerun on macOS on 2026-04-09 and still succeeds after the dedicated stream-window / input-return-path changes.
+
+### Milestone 7
+
+- [x] `host/input/` now exists as a new workspace crate with unit coverage for input codec handling, coordinate clamping, focus transitions, and stuck-input cleanup.
+- [x] `cargo test -q -p holobridge-input` passes on macOS.
+- [x] `cargo test -q -p holobridge-transport` passes on macOS, including the new loopback input path coverage.
+- [x] `cargo test -q` passes across the Rust host workspace after the Milestone 7 input work.
+- [x] `swift test --package-path client-avp/HoloBridge/Packages/HoloBridgeClient --scratch-path /tmp/HoloBridgeClientTestsAll` passes on macOS, including the new input codec tests and the repaired `NetworkFrameworkQuicClientTests`.
+- [x] `xcodebuild -project client-avp/HoloBridge/HoloBridge.xcodeproj -scheme HoloBridge -destination 'generic/platform=visionOS Simulator' build` passes on macOS with the new utility-shell + stream-window design.
+- [x] The canonical visionOS app now keeps connect / status / disconnect UI in the original shell window and opens a dedicated stream window for the video surface.
+- [x] The host now accepts pointer motion over QUIC datagrams and button / wheel / keyboard / focus updates over the reliable control stream after auth or resume.
+- [ ] Real Apple Vision Pro acceptance for Milestone 7 is still pending: separate-window UX, ornament-safe interaction, first-activation suppression, hardware-key forwarding, and device-measured input latency still need on-device verification.
 
 ---
 
 ## Known Limitations
 
-- The new pointer overlay path on the Apple client was authored from Windows and has not been rebuilt with Xcode in this pass because `swift`/`xcodebuild` are unavailable on this machine.
 - Masked-color Windows cursor shapes are currently approximated as RGBA images on the host. Typical color and monochrome cursors are handled, but XOR-style masked-color cursors may not render perfectly yet.
 - The host watchdog now fails loudly when the worker stalls, but the underlying Media Foundation / D3D11 calls are still in-process. If Windows wedges inside a driver path that ignores flush/close, a full process restart may still be required.
 - The capture crate intentionally exposes GPU textures only on Windows. Non-Windows builds compile for workspace health, but all capture entrypoints return `UnsupportedPlatform`.
@@ -155,14 +174,17 @@ Milestones 1 through 5 are complete, and the Milestone 6 implementation has now 
 - Authorization is still effectively first-user bootstrap by default; there is no explicit admin flow yet for reviewing or pre-registering Apple `sub` values.
 - Resume state is memory-only on both sides in Milestone 3. If the host process or the app restarts, the user must authenticate again.
 - The new Apple shared client package is structurally in place and tested with mocked transports, but the real macOS/visionOS `Network.framework` QUIC media path is not yet accepted. The local smoke executable currently fails during real QUIC connection establishment against the Rust host, before auth or media delivery begins.
-- The Milestone 6 visionOS transport / decode / display path was authored best-effort from Windows and has not yet been compiled or debugged with Xcode on Mac hardware.
+- The dedicated stream window and return-input path now build and test on macOS, but the Milestone 7 interaction model has not yet been exercised on a real Apple Vision Pro. Ornament-safe interaction and first-activation suppression still need device validation.
+- Milestone 7 intentionally supports only the `absolute surface` pointer policy. Relative trackpad / explicit capture modes are deferred to Milestone 7.1.
+- Software keyboard / text-entry forwarding is not part of Milestone 7. Only hardware-key replay is implemented.
+- Scroll replay currently uses a best-effort two-finger pan mapping on the client side and may need device tuning.
 - The current Windows desktop session used for Milestone 6 smoke validation did not grant DXGI Desktop Duplication access (`0x80070005`). A real local console session with duplication access is still required for native host video smoke acceptance.
 
 ---
 
 ## Next Recommended Step
 
-Now that the stream is stable under real AVP interaction, use the quieter default `scripts/e2e.ps1` path for day-to-day validation and reserve `.\scripts\e2e.ps1 -Verbose` for regressions. The next engineering pass should focus on cursor-shape edge cases such as masked-color fidelity and then decide whether reconnect cleanup or additional client-side diagnostics is the better follow-up milestone.
+Run the Milestone 7 manual acceptance pass on a real Apple Vision Pro against a Windows host: verify separate-window presentation, ornament-safe interaction, first-activation suppression, drag / wheel / hardware-key replay, and sequence-number-based latency measurements. If that pass is clean, close Milestone 7 and move to Milestone 8 audio; if device testing exposes UX gaps, carve the follow-up work into Milestone 7.1 for alternate pointer policies, text entry, and gesture tuning.
 
 ---
 

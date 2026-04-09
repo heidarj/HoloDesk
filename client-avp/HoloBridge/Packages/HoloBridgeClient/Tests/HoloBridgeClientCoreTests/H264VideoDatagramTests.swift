@@ -129,6 +129,12 @@ final class H264VideoDatagramTests: XCTestCase {
         )
     }
 
+    func testInputPointerDatagramRoundTrip() throws {
+        let datagram = InputPointerDatagram(sequence: 42, x: -12, y: 88).encode()
+        let decoded = try InputPointerDatagram.decode(datagram)
+        XCTAssertEqual(decoded, InputPointerDatagram(sequence: 42, x: -12, y: 88))
+    }
+
     private func makeDatagram(
         accessUnitID: UInt64,
         fragmentIndex: UInt16,

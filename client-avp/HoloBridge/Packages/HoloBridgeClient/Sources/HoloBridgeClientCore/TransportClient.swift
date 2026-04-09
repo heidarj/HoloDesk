@@ -36,6 +36,7 @@ public protocol TransportClient: AnyObject, Sendable {
     func armVideoDatagramReceive() -> AsyncThrowingStream<Data, Error>
     func receive() async throws -> ControlMessage
     func send(_ message: ControlMessage) async throws
+    func sendDatagram(_ payload: Data) async throws
     func sendHello(
         clientName: String,
         capabilities: [String]

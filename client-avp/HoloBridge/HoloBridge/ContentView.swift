@@ -3,6 +3,8 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(SessionManager.self) private var session
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     @State private var hostAddress = "127.0.0.1"
     @State private var port = "4433"
@@ -17,14 +19,20 @@ struct ContentView: View {
 
             statusView
 
-            if !session.state.isConnected {
-                connectionForm
+            if session.streamWindowRequested {
+                connectedUtilityView
             } else {
-                connectedSessionView
+                connectionForm
             }
         }
         .padding(40)
-        .frame(minWidth: 520, minHeight: 680)
+        .frame(minWidth: 520, minHeight: 420)
+        .onAppear {
+            synchronizeStreamWindow(session.streamWindowRequested)
+        }
+        .onChange(of: session.streamWindowRequested) { _, requested in
+            synchronizeStreamWindow(requested)
+        }
     }
 
     @ViewBuilder
@@ -91,104 +99,32 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var connectedSessionView: some View {
+    private var connectedUtilityView: some View {
         VStack(spacing: 18) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 24)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.06, green: 0.07, blue: 0.09),
-                                Color(red: 0.01, green: 0.01, blue: 0.02),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-
-                GeometryReader { geometry in
-                    ZStack {
-                        VideoDisplayView(renderer: session.videoRenderer)
-                        pointerOverlay(in: geometry.size)
-
-                        if session.videoRenderer.isAwaitingFrame {
-                            VStack(spacing: 10) {
-                                ProgressView()
-                                    .progressViewStyle(.circular)
-                                Text(session.videoRenderer.statusMessage)
-                                    .font(.headline)
-                                Text("The QUIC session is connected. Waiting for the first decoded H.264 frame.")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.center)
-                                    .frame(maxWidth: 360)
-                            }
-                            .padding(24)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
-                        }
-                    }
-                }
-                .padding(10)
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Stream window active", systemImage: "rectangle.inset.filled.and.person.filled")
+                    .font(.headline)
+                Text("The desktop stream now runs in its own window. This utility window stays available for reconnect, link diagnostics, and disconnect.")
+                    .foregroundStyle(.secondary)
+                Text("Video: \(session.videoRenderer.frameSizeDescription)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text("Frames presented: \(session.videoRenderer.framesPresented)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .frame(minWidth: 820, idealWidth: 920, maxWidth: 980, minHeight: 420, idealHeight: 520)
-            .overlay(alignment: .topLeading) {
-                videoBadge
-                    .padding(18)
-            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
 
             if let issue = session.videoRenderer.lastErrorMessage {
                 Text(issue)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: 820, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             connectedActions
-        }
-    }
-
-    @ViewBuilder
-    private var videoBadge: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(session.videoRenderer.statusMessage)
-                .font(.headline)
-            Text(session.videoRenderer.frameSizeDescription)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Text("Frames presented: \(session.videoRenderer.framesPresented)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-    }
-
-    @ViewBuilder
-    private func pointerOverlay(in size: CGSize) -> some View {
-        if
-            let pointerImage = session.videoRenderer.pointerImage,
-            session.videoRenderer.pointerVisible,
-            session.videoRenderer.videoFrameWidth > 0,
-            session.videoRenderer.videoFrameHeight > 0
-        {
-            let scaleX = size.width / CGFloat(session.videoRenderer.videoFrameWidth)
-            let scaleY = size.height / CGFloat(session.videoRenderer.videoFrameHeight)
-            let displayWidth = max(CGFloat(session.videoRenderer.pointerWidth) * scaleX, 1)
-            let displayHeight = max(CGFloat(session.videoRenderer.pointerHeight) * scaleY, 1)
-            let centerX =
-                (CGFloat(session.videoRenderer.pointerX - session.videoRenderer.pointerHotspotX) * scaleX)
-                + (displayWidth / 2)
-            let centerY =
-                (CGFloat(session.videoRenderer.pointerY - session.videoRenderer.pointerHotspotY) * scaleY)
-                + (displayHeight / 2)
-
-            Image(uiImage: pointerImage)
-                .resizable()
-                .interpolation(.none)
-                .frame(width: displayWidth, height: displayHeight)
-                .position(x: centerX, y: centerY)
-                .allowsHitTesting(false)
         }
     }
 
@@ -242,6 +178,14 @@ struct ContentView: View {
         case .connecting, .authenticating, .resuming: return .yellow
         case .connected(_): return .green
         case .error(_): return .red
+        }
+    }
+
+    private func synchronizeStreamWindow(_ requested: Bool) {
+        if requested {
+            openWindow(id: "stream-session")
+        } else {
+            dismissWindow(id: "stream-session")
         }
     }
 }

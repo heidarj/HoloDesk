@@ -45,4 +45,19 @@ final class ControlMessageCodecTests: XCTestCase {
         let decoded = try ControlMessageCodec.decodeFrame(frame)
         XCTAssertEqual(decoded, original)
     }
+
+    func testInputControlMessagesRoundTrip() throws {
+        let messages: [ControlMessage] = [
+            .pointerButton(button: "left", phase: "down", x: 101, y: 202, sequence: 9),
+            .pointerWheel(deltaX: 0, deltaY: -120, x: 102, y: 203, sequence: 10),
+            .keyboardKey(keyCode: 4, phase: "up", modifiers: 3),
+            .inputFocus(active: false),
+        ]
+
+        for original in messages {
+            let frame = try ControlMessageCodec.encodeFrame(original)
+            let decoded = try ControlMessageCodec.decodeFrame(frame)
+            XCTAssertEqual(decoded, original)
+        }
+    }
 }

@@ -114,6 +114,22 @@ public final class NetworkFrameworkQuicClient: TransportClient, @unchecked Senda
         }
     }
 
+    public func sendDatagram(_ payload: Data) async throws {
+        guard let bridge else {
+            throw TransportClientError.notConnected
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            bridge.sendDatagramPayload(payload) { error in
+                if let error {
+                    continuation.resume(throwing: self.wrapBridgeError(error))
+                } else {
+                    continuation.resume(returning: ())
+                }
+            }
+        }
+    }
+
     public func sendHello(clientName: String, capabilities: [String]) async throws {
         try await send(.hello(clientName: clientName, capabilities: capabilities))
     }

@@ -9,5 +9,10 @@ struct HoloBridgeApp: App {
             ContentView()
                 .environment(session)
         }
+
+        WindowGroup(id: "stream-session") {
+            StreamSessionView()
+                .environment(session)
+        }
     }
 }

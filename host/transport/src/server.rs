@@ -11,13 +11,14 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use holobridge_capture::{
-    CaptureBackend, CaptureConfig, CaptureError, CaptureSession, CaptureTarget, DisplayId,
-    DxgiCaptureBackend, FrameUpdateKind, PointerShape, PointerUpdate,
+    CaptureBackend, CaptureConfig, CaptureError, CaptureSession, CaptureTarget, DesktopBounds,
+    DisplayId, DxgiCaptureBackend, FrameUpdateKind, PointerShape, PointerUpdate,
 };
 use holobridge_encode::{
     recommended_bitrate_bps, EncodeError, EncodedAccessUnit, EncoderAbortHandle, MfH264Encoder,
     VideoEncoder, VideoEncoderConfig,
 };
+use holobridge_input::{ButtonPhase, InputError, InputSession, KeyPhase, PointerButton};
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use tokio::{
     sync::{mpsc, Mutex},
@@ -35,8 +36,9 @@ use crate::{
     config::{TransportClientConfig, TransportServerConfig, VideoStreamConfig},
     connection::{ConnectionError, ConnectionRole, ControlConnection, HandshakeAction},
     media::{
-        negotiated_datagram_payload_limit, H264DatagramPacketizer, MediaDatagramError,
-        PointerStateDatagram, POINTER_DATAGRAM_CAPABILITY, VIDEO_DATAGRAM_CAPABILITY,
+        negotiated_datagram_payload_limit, H264DatagramPacketizer, InputPointerDatagram,
+        MediaDatagramError, PointerStateDatagram, INPUT_POINTER_DATAGRAM_CAPABILITY,
+        POINTER_DATAGRAM_CAPABILITY, VIDEO_DATAGRAM_CAPABILITY,
     },
     protocol::{
         ControlMessage, ControlMessageCodec, FrameAccumulator, ProtocolError,
@@ -64,6 +66,7 @@ pub enum TransportError {
     Capture(CaptureError),
     Encode(EncodeError),
     Media(MediaDatagramError),
+    Input(InputError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1305,6 +1308,8 @@ async fn run_server_control_stream(
     let mut session_established = false;
     let mut client_capabilities = Vec::new();
     let mut video_stream: Option<ActiveVideoStream> = None;
+    let mut input_session: Option<Arc<std::sync::Mutex<InputSession>>> = None;
+    let mut input_datagram_task: Option<JoinHandle<()>> = None;
 
     let messages = read_messages(&mut recv, &mut accumulator).await?;
     for message in messages {
@@ -1357,6 +1362,13 @@ async fn run_server_control_stream(
                                 info!(sub, session_id = %created.session_id, "auth succeeded");
                                 active_session_id = Some(created.session_id.clone());
                                 session_established = true;
+                                input_session = build_input_session(&video_config);
+                                if client_supports_input_pointer_datagrams(&client_capabilities) {
+                                    input_datagram_task = spawn_input_datagram_task(
+                                        connection.clone(),
+                                        input_session.clone(),
+                                    );
+                                }
                                 let result = protocol.record_auth_result(
                                     true,
                                     "authenticated",
@@ -1434,6 +1446,13 @@ async fn run_server_control_stream(
                                 );
                                 active_session_id = Some(resumed.session_id.clone());
                                 session_established = true;
+                                input_session = build_input_session(&video_config);
+                                if client_supports_input_pointer_datagrams(&client_capabilities) {
+                                    input_datagram_task = spawn_input_datagram_task(
+                                        connection.clone(),
+                                        input_session.clone(),
+                                    );
+                                }
                                 let result = protocol.record_resume_result(
                                     true,
                                     "resumed",
@@ -1529,7 +1548,8 @@ async fn run_server_control_stream(
                         kind = message.kind(),
                         "host transport received control message"
                     );
-                    protocol.on_receive(message)?;
+                    protocol.on_receive(message.clone())?;
+                    handle_input_control_message(&input_session, &message);
                 }
                 if protocol.orderly_shutdown_complete() {
                     info!("host transport orderly shutdown complete");
@@ -1573,6 +1593,12 @@ async fn run_server_control_stream(
         }
     }
 
+    if let Some(input_session) = &input_session {
+        if let Err(error) = input_session.lock().unwrap().release_all() {
+            warn!(error = %error, "input replay cleanup failed");
+        }
+    }
+
     drop(pointer_shape_sender);
     if let Some(video_stream) = video_stream {
         video_stream.stop();
@@ -1582,6 +1608,9 @@ async fn run_server_control_stream(
             "host video: cleanup detached from control stream"
         );
         video_stream.detach();
+    }
+    if let Some(input_datagram_task) = input_datagram_task {
+        input_datagram_task.abort();
     }
     pointer_shape_task.abort();
 
@@ -1595,6 +1624,98 @@ async fn run_server_control_stream(
         "host transport session complete"
     );
     Ok(())
+}
+
+fn spawn_input_datagram_task(
+    connection: Connection,
+    input_session: Option<Arc<std::sync::Mutex<InputSession>>>,
+) -> Option<JoinHandle<()>> {
+    input_session.map(|input_session| {
+        tokio::spawn(async move {
+            loop {
+                let datagram = match connection.read_datagram().await {
+                    Ok(datagram) => datagram,
+                    Err(error) => {
+                        warn!(error = %error, "input replay datagram loop ended");
+                        break;
+                    }
+                };
+
+                match InputPointerDatagram::decode(&datagram) {
+                    Ok(pointer) => {
+                        let result = input_session.lock().unwrap().handle_pointer_motion(
+                            pointer.x,
+                            pointer.y,
+                            pointer.sequence,
+                        );
+                        if let Err(error) = result {
+                            warn!(error = %error, "input replay pointer motion failed");
+                        }
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "input replay ignored invalid datagram");
+                    }
+                }
+            }
+        })
+    })
+}
+
+fn handle_input_control_message(
+    input_session: &Option<Arc<std::sync::Mutex<InputSession>>>,
+    message: &ControlMessage,
+) {
+    let Some(input_session) = input_session else {
+        return;
+    };
+
+    let result = match message {
+        ControlMessage::PointerButton {
+            button,
+            phase,
+            x,
+            y,
+            sequence,
+        } => {
+            let button = PointerButton::parse(button);
+            let phase = ButtonPhase::parse(phase);
+            match (button, phase) {
+                (Ok(button), Ok(phase)) => input_session
+                    .lock()
+                    .unwrap()
+                    .handle_pointer_button(button, phase, *x, *y, *sequence),
+                (Err(error), _) | (_, Err(error)) => Err(error),
+            }
+        }
+        ControlMessage::PointerWheel {
+            delta_x,
+            delta_y,
+            x,
+            y,
+            sequence,
+        } => input_session
+            .lock()
+            .unwrap()
+            .handle_wheel(*delta_x, *delta_y, *x, *y, *sequence),
+        ControlMessage::KeyboardKey {
+            key_code, phase, ..
+        } => match KeyPhase::parse(phase) {
+            Ok(phase) => input_session
+                .lock()
+                .unwrap()
+                .handle_key(*key_code, phase),
+            Err(error) => Err(error),
+        },
+        ControlMessage::InputFocus { active } => input_session
+            .lock()
+            .unwrap()
+            .set_input_focus(*active),
+        _ => Ok(()),
+    };
+
+    if let Err(error) = result {
+        warn!(error = %error, "input replay control handling failed");
+    }
 }
 
 async fn run_client_control_stream(
@@ -1808,6 +1929,7 @@ impl fmt::Display for TransportError {
             Self::Capture(error) => write!(formatter, "capture error: {error}"),
             Self::Encode(error) => write!(formatter, "encode error: {error}"),
             Self::Media(error) => write!(formatter, "media datagram error: {error}"),
+            Self::Input(error) => write!(formatter, "input replay error: {error}"),
         }
     }
 }
@@ -1818,6 +1940,7 @@ fn hello_message(request_video_stream: bool) -> ControlMessage {
         capabilities.push(VIDEO_DATAGRAM_CAPABILITY.to_owned());
         capabilities.push(POINTER_DATAGRAM_CAPABILITY.to_owned());
         capabilities.push(POINTER_STREAM_CAPABILITY.to_owned());
+        capabilities.push(INPUT_POINTER_DATAGRAM_CAPABILITY.to_owned());
     }
     ControlMessage::hello("transport-smoke", capabilities)
 }
@@ -1836,6 +1959,70 @@ fn client_supports_pointer_stream(capabilities: &[String]) -> bool {
         && capabilities
             .iter()
             .any(|capability| capability == POINTER_STREAM_CAPABILITY)
+}
+
+fn client_supports_input_pointer_datagrams(capabilities: &[String]) -> bool {
+    capabilities
+        .iter()
+        .any(|capability| capability == INPUT_POINTER_DATAGRAM_CAPABILITY)
+}
+
+fn default_input_display_bounds() -> DesktopBounds {
+    DesktopBounds {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1080,
+    }
+}
+
+fn resolve_input_display_bounds(video_config: &VideoStreamConfig) -> DesktopBounds {
+    if !matches!(video_config.source, crate::config::VideoSource::DesktopCapture) {
+        return default_input_display_bounds();
+    }
+
+    let backend = match DxgiCaptureBackend::new() {
+        Ok(backend) => backend,
+        Err(error) => {
+            warn!(error = %error, "input replay: falling back to default bounds because DXGI backend creation failed");
+            return default_input_display_bounds();
+        }
+    };
+
+    let displays = match backend.enumerate_displays() {
+        Ok(displays) => displays,
+        Err(error) => {
+            warn!(error = %error, "input replay: falling back to default bounds because display enumeration failed");
+            return default_input_display_bounds();
+        }
+    };
+
+    let selected = match video_config.display_id.as_deref() {
+        Some(display_id) => displays
+            .iter()
+            .find(|display| display.id.to_string() == display_id)
+            .cloned(),
+        None => displays
+            .iter()
+            .find(|display| display.is_primary)
+            .cloned()
+            .or_else(|| displays.first().cloned()),
+    };
+
+    selected
+        .map(|display| display.desktop_bounds)
+        .unwrap_or_else(default_input_display_bounds)
+}
+
+fn build_input_session(video_config: &VideoStreamConfig) -> Option<Arc<std::sync::Mutex<InputSession>>> {
+    let display_bounds = resolve_input_display_bounds(video_config);
+    match InputSession::new(display_bounds) {
+        Ok(session) => Some(Arc::new(std::sync::Mutex::new(session))),
+        Err(error) => {
+            warn!(error = %error, "input replay disabled for this session");
+            None
+        }
+    }
 }
 
 impl Error for TransportError {}
@@ -1906,6 +2093,12 @@ impl From<MediaDatagramError> for TransportError {
     }
 }
 
+impl From<InputError> for TransportError {
+    fn from(value: InputError) -> Self {
+        Self::Input(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{net::UdpSocket, path::PathBuf, time::Instant};
@@ -1953,6 +2146,7 @@ mod tests {
         assert!(capabilities.contains(&VIDEO_DATAGRAM_CAPABILITY.to_owned()));
         assert!(capabilities.contains(&POINTER_DATAGRAM_CAPABILITY.to_owned()));
         assert!(capabilities.contains(&POINTER_STREAM_CAPABILITY.to_owned()));
+        assert!(capabilities.contains(&INPUT_POINTER_DATAGRAM_CAPABILITY.to_owned()));
     }
 
     fn free_port() -> u16 {
@@ -2124,6 +2318,28 @@ mod tests {
             )
             .await?;
             self.read_session_result().await
+        }
+
+        async fn send_control_message(
+            &mut self,
+            message: &ControlMessage,
+        ) -> Result<(), TransportError> {
+            send_message(&mut self.send, message).await
+        }
+
+        async fn send_input_pointer_datagram(
+            &self,
+            sequence: u64,
+            x: i32,
+            y: i32,
+        ) -> Result<(), TransportError> {
+            self.connection
+                .send_datagram(InputPointerDatagram { sequence, x, y }.encode().to_vec().into())
+                .map_err(|error| {
+                    TransportError::Runtime(format!(
+                        "failed to send input pointer datagram during loopback test: {error}"
+                    ))
+                })
         }
 
         async fn read_media_access_unit(
@@ -2445,6 +2661,67 @@ mod tests {
         assert!(access_unit.is_keyframe);
         assert_eq!(access_unit.pts_100ns, 166_666);
         assert_eq!(access_unit.duration_100ns, 166_666);
+
+        client.close_gracefully().await.unwrap();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn loopback_input_messages_are_accepted_after_auth() {
+        let (private_pem, public_pem) = generate_test_rsa_keypair();
+        let tmp = TempDir::new().unwrap();
+        let pub_key_path = tmp.path().join("pub.pem");
+        std::fs::write(&pub_key_path, &public_pem).unwrap();
+
+        let port = free_port();
+        let auth_config = test_auth_config(&tmp, pub_key_path.to_str().unwrap(), 60);
+        let server = TransportServer::with_auth(test_server_config(port), &auth_config)
+            .await
+            .unwrap();
+
+        let server_task = tokio::spawn(async move { server.serve_n(1).await });
+        sleep(Duration::from_millis(100)).await;
+
+        let identity_token = create_test_jwt(
+            &private_pem,
+            "input-user-1",
+            &auth_config.apple_bundle_id,
+            false,
+        );
+        let mut client_config = test_client_config(port);
+        client_config.request_video_stream = true;
+
+        let mut client = ConnectedClient::connect(&client_config).await.unwrap();
+        client.exchange_hello(true).await.unwrap();
+
+        let auth_result = client.authenticate(&identity_token).await.unwrap();
+        match auth_result {
+            ControlMessage::AuthResult { success, .. } => assert!(success),
+            other => panic!("unexpected message: {:?}", other),
+        }
+
+        client
+            .send_input_pointer_datagram(1, 100, 200)
+            .await
+            .unwrap();
+        client
+            .send_control_message(&ControlMessage::pointer_button(
+                "left", "down", 100, 200, 2,
+            ))
+            .await
+            .unwrap();
+        client
+            .send_control_message(&ControlMessage::pointer_wheel(0, -120, 100, 200, 3))
+            .await
+            .unwrap();
+        client
+            .send_control_message(&ControlMessage::keyboard_key(4, "down", 0))
+            .await
+            .unwrap();
+        client
+            .send_control_message(&ControlMessage::input_focus(false))
+            .await
+            .unwrap();
 
         client.close_gracefully().await.unwrap();
         server_task.await.unwrap().unwrap();

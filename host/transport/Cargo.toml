@@ -32,6 +32,7 @@ path = "src/bin/video_smoke_client.rs"
 holobridge-auth = { path = "../auth" }
 holobridge-capture = { path = "../capture" }
 holobridge-encode = { path = "../encode" }
+holobridge-input = { path = "../input" }
 holobridge-session = { path = "../session" }
 bytes = "1.10.1"
 quinn = "0.11"

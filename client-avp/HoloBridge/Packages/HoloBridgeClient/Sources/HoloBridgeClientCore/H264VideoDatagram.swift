@@ -23,6 +23,46 @@ public struct PointerStateDatagram: Sendable, Equatable {
     }
 }
 
+public struct InputPointerDatagram: Sendable, Equatable {
+    public let sequence: UInt64
+    public let x: Int32
+    public let y: Int32
+
+    static let encodedLength = 24
+    private static let version: UInt8 = 1
+    private static let pointerMotionKind: UInt8 = 2
+
+    public func encode() -> Data {
+        var datagram = Data(repeating: 0, count: Self.encodedLength)
+        datagram[0] = Self.version
+        datagram[2] = Self.pointerMotionKind
+        datagram.replaceSubrange(4..<12, with: withUnsafeBytes(of: sequence.bigEndian, Array.init))
+        datagram.replaceSubrange(12..<16, with: withUnsafeBytes(of: UInt32(bitPattern: x).bigEndian, Array.init))
+        datagram.replaceSubrange(16..<20, with: withUnsafeBytes(of: UInt32(bitPattern: y).bigEndian, Array.init))
+        return datagram
+    }
+
+    public static func decode(_ datagram: Data) throws -> InputPointerDatagram {
+        guard datagram.count >= encodedLength else {
+            throw MediaDatagramParseError.pointerDatagramTooShort(datagram.count)
+        }
+
+        let version = datagram[0]
+        guard version == Self.version else {
+            throw MediaDatagramParseError.unsupportedVersion(version)
+        }
+        guard datagram[2] == Self.pointerMotionKind else {
+            throw MediaDatagramParseError.unexpectedPacketKind(datagram[2])
+        }
+
+        return InputPointerDatagram(
+            sequence: datagram.readUInt64BigEndian(at: 4),
+            x: Int32(bitPattern: UInt32(datagram.readUInt32BigEndian(at: 12))),
+            y: Int32(bitPattern: UInt32(datagram.readUInt32BigEndian(at: 16)))
+        )
+    }
+}
+
 public enum MediaDatagram: Sendable, Equatable {
     case video(Data)
     case pointerState(PointerStateDatagram)

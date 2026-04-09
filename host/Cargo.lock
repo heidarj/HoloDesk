@@ -392,6 +392,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "holobridge-input"
+version = "0.1.0"
+dependencies = [
+ "holobridge-capture",
+ "windows",
+]
+
+[[package]]
 name = "holobridge-session"
 version = "0.1.0"
 dependencies = [
@@ -410,6 +418,7 @@ dependencies = [
  "holobridge-auth",
  "holobridge-capture",
  "holobridge-encode",
+ "holobridge-input",
  "holobridge-session",
  "quinn",
  "rcgen",

@@ -39,11 +39,16 @@ public final class SessionManager {
     public var authMode: AuthMode
     public let videoRenderer: VideoRenderer
     public private(set) var state: SessionState = .disconnected
+    public private(set) var streamWindowRequested = false
+    public private(set) var remoteInputSuppressed = false
 
     @ObservationIgnored private let logger = Logger(subsystem: "HoloBridge", category: "Session")
     @ObservationIgnored private let videoPipeline: VideoStreamPipeline
     @ObservationIgnored private var sessionClient: SessionClient! = nil
     @ObservationIgnored private var connectTask: Task<Void, Never>?
+    @ObservationIgnored private var streamWindowVisible = false
+    @ObservationIgnored private var remoteInputFocusState = false
+    @ObservationIgnored private var nextInputSequenceValue: UInt64 = 1
 
     public init(authMode: AuthMode? = nil) {
         let renderer = VideoRenderer()
@@ -83,10 +88,15 @@ public final class SessionManager {
                     self.state = newState
                     switch newState {
                     case .connected:
+                        self.streamWindowRequested = true
                         self.videoPipeline.prepareForStream()
-                    case .disconnected, .connecting, .authenticating, .resuming, .error:
+                    case .disconnected, .error:
+                        self.streamWindowRequested = false
+                        self.videoPipeline.reset(statusMessage: "Waiting for stream")
+                    case .connecting, .authenticating, .resuming:
                         self.videoPipeline.reset(statusMessage: "Waiting for stream")
                     }
+                    self.synchronizeRemoteInputFocus()
                 }
             },
             onVideoDatagram: { [weak self] datagram in
@@ -153,6 +163,107 @@ public final class SessionManager {
         await sessionClient.simulateNetworkDrop()
     }
 
+    public func noteStreamWindowVisibility(_ isVisible: Bool) {
+        streamWindowVisible = isVisible
+        synchronizeRemoteInputFocus()
+    }
+
+    public func setOrnamentInteraction(active: Bool) {
+        guard remoteInputSuppressed != active else {
+            return
+        }
+        remoteInputSuppressed = active
+        synchronizeRemoteInputFocus()
+    }
+
+    public func sendPointerMotion(
+        x: Int32,
+        y: Int32
+    ) {
+        guard canSendRemoteInput else {
+            return
+        }
+        let sequence = nextInputSequence()
+        Task {
+            do {
+                try await sessionClient.sendPointerMotion(x: x, y: y, sequence: sequence)
+            } catch {
+                logger.debug("pointer motion dropped: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    public func sendPointerButton(
+        button: String,
+        phase: String,
+        x: Int32,
+        y: Int32
+    ) {
+        guard canSendRemoteInput else {
+            return
+        }
+        let sequence = nextInputSequence()
+        Task {
+            do {
+                try await sessionClient.sendPointerButton(
+                    button: button,
+                    phase: phase,
+                    x: x,
+                    y: y,
+                    sequence: sequence
+                )
+            } catch {
+                logger.debug("pointer button dropped: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    public func sendWheel(
+        deltaX: Int32,
+        deltaY: Int32,
+        x: Int32,
+        y: Int32
+    ) {
+        guard canSendRemoteInput else {
+            return
+        }
+        let sequence = nextInputSequence()
+        Task {
+            do {
+                try await sessionClient.sendWheel(
+                    deltaX: deltaX,
+                    deltaY: deltaY,
+                    x: x,
+                    y: y,
+                    sequence: sequence
+                )
+            } catch {
+                logger.debug("pointer wheel dropped: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    public func sendKey(
+        keyCode: UInt16,
+        phase: String,
+        modifiers: UInt32
+    ) {
+        guard canSendRemoteInput else {
+            return
+        }
+        Task {
+            do {
+                try await sessionClient.sendKey(
+                    keyCode: keyCode,
+                    phase: phase,
+                    modifiers: modifiers
+                )
+            } catch {
+                logger.debug("keyboard input dropped: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     private func makeAuthProvider() -> any AuthProvider {
         switch authMode {
         case .apple:
@@ -168,5 +279,35 @@ public final class SessionManager {
         #else
         .apple
         #endif
+    }
+
+    private var canSendRemoteInput: Bool {
+        state.isConnected && streamWindowVisible && !remoteInputSuppressed
+    }
+
+    private func synchronizeRemoteInputFocus() {
+        let desiredFocus = canSendRemoteInput
+        guard desiredFocus != remoteInputFocusState else {
+            return
+        }
+
+        remoteInputFocusState = desiredFocus
+        guard state.isConnected else {
+            return
+        }
+
+        Task {
+            do {
+                try await sessionClient.setInputFocus(active: desiredFocus)
+            } catch {
+                logger.debug("input focus update dropped: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func nextInputSequence() -> UInt64 {
+        let sequence = nextInputSequenceValue
+        nextInputSequenceValue &+= 1
+        return sequence
     }
 }
