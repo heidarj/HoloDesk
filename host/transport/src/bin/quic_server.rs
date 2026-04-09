@@ -13,7 +13,10 @@ async fn main() -> ExitCode {
     let transport_config = TransportServerConfig::from_env();
     let auth_config = AuthConfig::from_env();
 
-    let server = if auth_config.test_mode || !auth_config.apple_bundle_id.is_empty() {
+    let server = if auth_config.no_auth {
+        info!("auth disabled (HOLOBRIDGE_AUTH_DISABLED=true)");
+        TransportServer::new(transport_config)
+    } else if auth_config.test_mode || !auth_config.apple_bundle_id.is_empty() {
         info!("auth enabled (test_mode={})", auth_config.test_mode);
         match TransportServer::with_auth(transport_config, &auth_config).await {
             Ok(s) => s,

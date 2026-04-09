@@ -124,7 +124,7 @@ public actor SessionClient {
     @discardableResult
     public func connect(
         to endpoint: SessionEndpoint,
-        identityTokenSupplier: @escaping IdentityTokenSupplier,
+        identityTokenSupplier: IdentityTokenSupplier? = nil,
         requestVideo: Bool = true
     ) async throws -> SessionBinding {
         lastEndpoint = endpoint
@@ -133,7 +133,7 @@ public actor SessionClient {
 
         await invalidateCurrentTransport(reason: nil)
 
-        if canAttemptResume(to: endpoint) {
+        if identityTokenSupplier != nil, canAttemptResume(to: endpoint) {
             setState(.resuming)
             switch await attemptResume(endpoint: endpoint, requestVideo: requestVideo) {
             case .success(let resumedBinding):
@@ -157,20 +157,32 @@ public actor SessionClient {
             )
             _ = try await preparedTransport.client.awaitHelloAck()
 
-            setState(.authenticating)
-            let token = try await identityTokenSupplier()
-            try await preparedTransport.client.sendAuthenticate(identityToken: token)
+            let binding: SessionBinding
 
-            let authResult = try await preparedTransport.client.awaitAuthResult()
-            guard authResult.success == true else {
-                let reason = authResult.message ?? "unknown"
-                await invalidateTransport(generation: preparedTransport.generation, reason: nil)
-                let error = SessionClientError.authRejected(reason)
-                setState(.error(error.localizedDescription))
-                throw error
+            if let identityTokenSupplier {
+                setState(.authenticating)
+                let token = try await identityTokenSupplier()
+                try await preparedTransport.client.sendAuthenticate(identityToken: token)
+
+                let authResult = try await preparedTransport.client.awaitAuthResult()
+                guard authResult.success == true else {
+                    let reason = authResult.message ?? "unknown"
+                    await invalidateTransport(generation: preparedTransport.generation, reason: nil)
+                    let error = SessionClientError.authRejected(reason)
+                    setState(.error(error.localizedDescription))
+                    throw error
+                }
+
+                binding = try sessionBinding(from: authResult, action: "auth")
+            } else {
+                binding = SessionBinding(
+                    sessionID: "noauth-\(UUID().uuidString)",
+                    resumeToken: "",
+                    resumeTokenTTLSeconds: 0,
+                    userDisplayName: nil
+                )
             }
 
-            let binding = try sessionBinding(from: authResult, action: "auth")
             applyConnectedSession(
                 binding,
                 transport: preparedTransport.client,

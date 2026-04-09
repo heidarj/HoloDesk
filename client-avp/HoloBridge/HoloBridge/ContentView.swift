@@ -156,7 +156,11 @@ struct ContentView: View {
     }
 
     private var connectLabel: String {
-        session.authMode == .apple ? "Sign In and Connect" : "Connect"
+        switch session.authMode {
+        case .apple: return "Sign In and Connect"
+        case .test: return "Connect"
+        case .none: return "Connect (No Auth)"
+        }
     }
 
     private var connectSystemImage: String {

@@ -10,6 +10,7 @@ use tempfile::TempDir;
 
 fn test_auth_config(tmp: &TempDir, pub_key_path: &str) -> AuthConfig {
     AuthConfig {
+        no_auth: false,
         apple_bundle_id: "com.holobridge.client".to_owned(),
         jwks_cache_ttl_secs: 3600,
         user_store_path: tmp.path().join("users.json"),

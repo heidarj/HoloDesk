@@ -5,6 +5,7 @@ import os
 public enum AuthMode: String, CaseIterable, Equatable, Hashable, Identifiable, Sendable {
     case apple
     case test
+    case none
 
     public var id: String { rawValue }
 
@@ -14,6 +15,8 @@ public enum AuthMode: String, CaseIterable, Equatable, Hashable, Identifiable, S
             return "Apple"
         case .test:
             return "Test"
+        case .none:
+            return "None"
         }
     }
 }
@@ -130,11 +133,18 @@ public final class SessionManager {
         connectTask?.cancel()
         connectTask = Task {
             let endpoint = SessionEndpoint(host: host, port: port)
-            let authProvider = makeAuthProvider()
-            let identityTokenSupplier: IdentityTokenSupplier = {
-                try await Task { @MainActor in
-                    try await authProvider.getIdentityToken()
-                }.value
+
+            let identityTokenSupplier: IdentityTokenSupplier?
+            switch authMode {
+            case .none:
+                identityTokenSupplier = nil
+            case .apple, .test:
+                let authProvider = makeAuthProvider()
+                identityTokenSupplier = {
+                    try await Task { @MainActor in
+                        try await authProvider.getIdentityToken()
+                    }.value
+                }
             }
 
             do {

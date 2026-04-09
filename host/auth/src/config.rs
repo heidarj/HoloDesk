@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
+    /// When true, skip all authentication and immediately establish sessions.
+    pub no_auth: bool,
     /// Expected `aud` claim — the Apple bundle ID / client ID.
     pub apple_bundle_id: String,
     /// JWKS cache TTL in seconds (default: 3600).
@@ -23,6 +25,9 @@ pub struct AuthConfig {
 impl AuthConfig {
     pub fn from_env() -> Self {
         Self {
+            no_auth: std::env::var("HOLOBRIDGE_AUTH_DISABLED")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             apple_bundle_id: std::env::var("HOLOBRIDGE_AUTH_BUNDLE_ID")
                 .unwrap_or_else(|_| "cloud.hr5.HoloBridge".to_owned()),
             jwks_cache_ttl_secs: std::env::var("HOLOBRIDGE_AUTH_JWKS_TTL")

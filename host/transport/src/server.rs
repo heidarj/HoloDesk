@@ -1514,6 +1514,38 @@ async fn run_server_control_stream(
                 None => {}
             }
         }
+    } else {
+        // No-auth mode: skip handshake, immediately establish session.
+        protocol.bypass_auth();
+        let synthetic_id = format!(
+            "noauth-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        );
+        info!(session_id = %synthetic_id, "no-auth mode: session established without authentication");
+        active_session_id = Some(synthetic_id);
+        session_established = true;
+        input_session = build_input_session(&video_config);
+        if client_supports_input_pointer_datagrams(&client_capabilities) {
+            input_datagram_task = spawn_input_datagram_task(
+                connection.clone(),
+                input_session.clone(),
+            );
+        }
+        if video_config.enabled && client_supports_video_stream(&client_capabilities) {
+            let pointer_enabled = client_supports_pointer_stream(&client_capabilities);
+            video_stream = Some(start_video_stream(
+                connection.clone(),
+                video_config.clone(),
+                VideoWorkerOptions {
+                    pointer_enabled,
+                    pointer_shape_sender: pointer_enabled
+                        .then(|| pointer_shape_sender.clone()),
+                },
+            )?);
+        }
     }
 
     if server_initiated_close && protocol.hello_exchanged() {
@@ -2150,6 +2182,7 @@ mod tests {
 
     fn test_auth_config(tmp: &TempDir, pub_key_path: &str, ttl_secs: u64) -> AuthConfig {
         AuthConfig {
+            no_auth: false,
             apple_bundle_id: "cloud.hr5.HoloBridge".to_owned(),
             jwks_cache_ttl_secs: 3600,
             user_store_path: tmp.path().join("users.json"),

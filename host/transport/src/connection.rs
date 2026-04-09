@@ -92,6 +92,13 @@ impl ControlConnection {
         self.role
     }
 
+    /// Mark the session as established without completing the auth handshake.
+    /// Used in no-auth mode so that input control messages are not rejected.
+    pub fn bypass_auth(&mut self) {
+        self.auth_success = Some(true);
+        self.auth_result_sent = true;
+    }
+
     pub fn on_receive(
         &mut self,
         message: ControlMessage,

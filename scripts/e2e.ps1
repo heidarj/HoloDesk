@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$NoAuth
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -19,8 +21,16 @@ $env:HOLOBRIDGE_TRANSPORT_PORT = '4433'
 $env:HOLOBRIDGE_VIDEO_ENABLED = 'true'
 $env:HOLOBRIDGE_VIDEO_FRAME_RATE = '60/1'
 $env:HOLOBRIDGE_VIDEO_FIRST_FRAME_TIMEOUT_SECS = '5'
-$env:HOLOBRIDGE_AUTH_TEST_MODE = 'false'
-$env:HOLOBRIDGE_AUTH_BUNDLE_ID = 'cloud.hr5.HoloBridge'
+if ($NoAuth) {
+    $env:HOLOBRIDGE_AUTH_DISABLED = 'true'
+    Remove-Item Env:HOLOBRIDGE_AUTH_TEST_MODE -ErrorAction SilentlyContinue
+    Remove-Item Env:HOLOBRIDGE_AUTH_BUNDLE_ID -ErrorAction SilentlyContinue
+    Write-Host 'Auth disabled: HOLOBRIDGE_AUTH_DISABLED=true'
+} else {
+    Remove-Item Env:HOLOBRIDGE_AUTH_DISABLED -ErrorAction SilentlyContinue
+    $env:HOLOBRIDGE_AUTH_TEST_MODE = 'false'
+    $env:HOLOBRIDGE_AUTH_BUNDLE_ID = 'cloud.hr5.HoloBridge'
+}
 $env:RUST_BACKTRACE = '1'
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
