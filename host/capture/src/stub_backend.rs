@@ -1,6 +1,5 @@
 use crate::{
-    CaptureBackend, CaptureConfig, CaptureError, CaptureSession, CaptureTarget,
-    DisplayInfo,
+    CaptureBackend, CaptureConfig, CaptureError, CaptureSession, CaptureTarget, DisplayInfo,
 };
 
 #[derive(Debug, Default, Clone, Copy)]

@@ -224,13 +224,7 @@ impl ControlMessage {
         }
     }
 
-    pub fn pointer_wheel(
-        delta_x: i32,
-        delta_y: i32,
-        x: i32,
-        y: i32,
-        sequence: u64,
-    ) -> Self {
+    pub fn pointer_wheel(delta_x: i32, delta_y: i32, x: i32, y: i32, sequence: u64) -> Self {
         Self::PointerWheel {
             delta_x,
             delta_y,
@@ -240,11 +234,7 @@ impl ControlMessage {
         }
     }
 
-    pub fn keyboard_key(
-        key_code: u16,
-        phase: impl Into<String>,
-        modifiers: u32,
-    ) -> Self {
+    pub fn keyboard_key(key_code: u16, phase: impl Into<String>, modifiers: u32) -> Self {
         Self::KeyboardKey {
             key_code,
             phase: phase.into(),
@@ -410,14 +400,7 @@ mod tests {
 
     #[test]
     fn pointer_shape_roundtrip_preserves_shape_payload() {
-        let message = ControlMessage::pointer_shape(
-            "color",
-            32,
-            16,
-            4,
-            7,
-            "AQIDBA==",
-        );
+        let message = ControlMessage::pointer_shape("color", 32, 16, 4, 7, "AQIDBA==");
 
         let encoded = ControlMessageCodec::encode(&message).unwrap();
         let decoded = ControlMessageCodec::decode_frame(&encoded).unwrap();

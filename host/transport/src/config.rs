@@ -233,8 +233,7 @@ impl VideoStreamConfig {
                 .unwrap_or(defaults.first_frame_timeout_secs),
             frame_rate_num,
             frame_rate_den,
-            bitrate_bps: env_u32("HOLOBRIDGE_VIDEO_BITRATE_BPS")
-                .or(defaults.bitrate_bps),
+            bitrate_bps: env_u32("HOLOBRIDGE_VIDEO_BITRATE_BPS").or(defaults.bitrate_bps),
             synthetic_preset: env_synthetic_video_preset("HOLOBRIDGE_VIDEO_SYNTHETIC_PRESET")
                 .or_else(|| {
                     if source == VideoSource::SyntheticLoopback {
@@ -349,13 +348,11 @@ fn env_optional_duration_secs(name: &str) -> Option<Option<Duration>> {
 
 fn env_optional_usize(name: &str) -> Option<Option<usize>> {
     env::var(name).ok().and_then(|value| {
-        value.trim().parse::<usize>().ok().map(|bytes| {
-            if bytes == 0 {
-                None
-            } else {
-                Some(bytes)
-            }
-        })
+        value
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .map(|bytes| if bytes == 0 { None } else { Some(bytes) })
     })
 }
 

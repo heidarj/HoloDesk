@@ -10,8 +10,8 @@ use std::{
 use holobridge_auth::test_keys::create_test_jwt;
 use holobridge_transport::{
     tls::build_client_config, ControlMessage, ControlMessageCodec, FrameAccumulator,
-    H264DatagramReassembler, ReassemblerConfig, TransportClientConfig,
-    CONTROL_STREAM_CAPABILITY, VIDEO_DATAGRAM_CAPABILITY,
+    H264DatagramReassembler, ReassemblerConfig, TransportClientConfig, CONTROL_STREAM_CAPABILITY,
+    VIDEO_DATAGRAM_CAPABILITY,
 };
 use quinn::{Endpoint, RecvStream, SendStream};
 use tracing::{error, info, warn};
@@ -37,22 +37,17 @@ async fn run() -> Result<(), String> {
         .unwrap_or_else(|_| "/tmp/holobridge_test_priv.pem".to_owned());
     let private_pem = std::fs::read(&priv_key_path)
         .map_err(|error| format!("failed to read test private key {priv_key_path}: {error}"))?;
-    let bundle_id = env::var("HOLOBRIDGE_AUTH_BUNDLE_ID")
-        .unwrap_or_else(|_| "cloud.hr5.HoloBridge".to_owned());
+    let bundle_id =
+        env::var("HOLOBRIDGE_AUTH_BUNDLE_ID").unwrap_or_else(|_| "cloud.hr5.HoloBridge".to_owned());
 
-    let identity_token = create_test_jwt(
-        &private_pem,
-        &options.test_user_sub,
-        &bundle_id,
-        false,
-    );
+    let identity_token = create_test_jwt(&private_pem, &options.test_user_sub, &bundle_id, false);
     let mut config = TransportClientConfig::from_env();
     config.identity_token = Some(identity_token);
     config.request_video_stream = true;
 
     let client_config = build_client_config(&config).map_err(|error| error.to_string())?;
-    let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())
-        .map_err(|error| error.to_string())?;
+    let mut endpoint =
+        Endpoint::client("0.0.0.0:0".parse().unwrap()).map_err(|error| error.to_string())?;
     endpoint.set_default_client_config(client_config);
 
     let server_addr = config
@@ -98,11 +93,7 @@ async fn run() -> Result<(), String> {
         .identity_token
         .as_deref()
         .ok_or_else(|| "identity token missing from client config".to_owned())?;
-    send_message(
-        &mut send,
-        &ControlMessage::authenticate(identity_token),
-    )
-    .await?;
+    send_message(&mut send, &ControlMessage::authenticate(identity_token)).await?;
 
     let auth_messages = read_messages(&mut recv, &mut accumulator).await?;
     let auth_result = auth_messages
@@ -110,7 +101,9 @@ async fn run() -> Result<(), String> {
         .find(|message| matches!(message, ControlMessage::AuthResult { .. }))
         .ok_or_else(|| "server did not return auth_result".to_owned())?;
     match auth_result {
-        ControlMessage::AuthResult { success, message, .. } if success => {
+        ControlMessage::AuthResult {
+            success, message, ..
+        } if success => {
             info!(message, "authenticated for video smoke");
         }
         ControlMessage::AuthResult { message, .. } => {
@@ -130,7 +123,12 @@ async fn run() -> Result<(), String> {
     let mut total_bytes = 0u64;
 
     while Instant::now() < deadline {
-        let datagram = match tokio::time::timeout(Duration::from_millis(250), connection.read_datagram()).await {
+        let datagram = match tokio::time::timeout(
+            Duration::from_millis(250),
+            connection.read_datagram(),
+        )
+        .await
+        {
             Ok(Ok(datagram)) => datagram,
             Ok(Err(error)) => return Err(format!("failed to read datagram: {error}")),
             Err(_) => continue,
@@ -149,7 +147,9 @@ async fn run() -> Result<(), String> {
         }
     }
 
-    if let Err(error) = send_message(&mut send, &ControlMessage::goodbye("video-smoke-complete")).await {
+    if let Err(error) =
+        send_message(&mut send, &ControlMessage::goodbye("video-smoke-complete")).await
+    {
         warn!(error = %error, "failed to send goodbye");
     }
     let _ = send.finish();
@@ -168,10 +168,7 @@ async fn run() -> Result<(), String> {
     Ok(())
 }
 
-async fn send_message(
-    send: &mut SendStream,
-    message: &ControlMessage,
-) -> Result<(), String> {
+async fn send_message(send: &mut SendStream, message: &ControlMessage) -> Result<(), String> {
     let encoded = ControlMessageCodec::encode(message).map_err(|error| error.to_string())?;
     send.write_all(&encoded)
         .await

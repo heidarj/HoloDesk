@@ -75,8 +75,7 @@ fn run() -> Result<(), String> {
         match session.acquire_frame().map_err(|error| error.to_string())? {
             Some(frame) => {
                 captured_frames += 1;
-                last_dimensions =
-                    Some((frame.metadata().width, frame.metadata().height));
+                last_dimensions = Some((frame.metadata().width, frame.metadata().height));
 
                 let frame_at = Instant::now();
                 if let Some(previous) = prior_frame_at.replace(frame_at) {
@@ -135,23 +134,17 @@ impl SmokeArgs {
                 "--list" => parsed.list_only = true,
                 "--display-id" => {
                     let value = args.next().ok_or_else(Self::usage)?;
-                    parsed.display_id = Some(
-                        value
-                            .parse()
-                            .map_err(|error: holobridge_capture::DisplayIdParseError| {
-                                error.to_string()
-                            })?,
-                    );
+                    parsed.display_id = Some(value.parse().map_err(
+                        |error: holobridge_capture::DisplayIdParseError| error.to_string(),
+                    )?);
                 }
                 "--duration-seconds" => {
                     let value = args.next().ok_or_else(Self::usage)?;
-                    parsed.duration_seconds =
-                        value.parse::<u64>().map_err(|_| Self::usage())?;
+                    parsed.duration_seconds = value.parse::<u64>().map_err(|_| Self::usage())?;
                 }
                 "--timeout-ms" => {
                     let value = args.next().ok_or_else(Self::usage)?;
-                    parsed.timeout_ms =
-                        value.parse::<u32>().map_err(|_| Self::usage())?;
+                    parsed.timeout_ms = value.parse::<u32>().map_err(|_| Self::usage())?;
                 }
                 _ => return Err(Self::usage()),
             }

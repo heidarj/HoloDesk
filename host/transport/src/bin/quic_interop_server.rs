@@ -2,9 +2,7 @@ use std::{error::Error, net::SocketAddr, process::ExitCode, time::Duration};
 
 use holobridge_transport::{tls::build_server_config, TransportServerConfig};
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
-use tokio::{
-    time::{sleep, timeout},
-};
+use tokio::time::{sleep, timeout};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -141,9 +139,7 @@ async fn run_mixed_mode(connection: Connection) -> Result<(), Box<dyn Error>> {
             .await
             .map_err(|_| "timed out waiting for mixed-mode datagram from client")??;
         if payload != DATAGRAM_PING {
-            return Err(
-                format!("unexpected mixed-mode datagram payload: {:?}", payload).into(),
-            );
+            return Err(format!("unexpected mixed-mode datagram payload: {:?}", payload).into());
         }
         info!("mixed mode: received datagram ping, sending datagram ack");
         connection.send_datagram(DATAGRAM_ACK.to_vec().into())?;

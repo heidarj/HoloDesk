@@ -16,37 +16,31 @@ use windows::{
         Graphics::{
             Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
             Direct3D11::{
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                D3D11CreateDevice, ID3D11Device, ID3D11Texture2D, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                 D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-                D3D11CreateDevice, ID3D11Device,
-                ID3D11Texture2D,
             },
             Dxgi::{
                 Common::{
-                    DXGI_MODE_ROTATION_IDENTITY,
-                    DXGI_MODE_ROTATION_ROTATE90,
-                    DXGI_MODE_ROTATION_ROTATE180,
-                    DXGI_MODE_ROTATION_ROTATE270,
+                    DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_ROTATE180,
+                    DXGI_MODE_ROTATION_ROTATE270, DXGI_MODE_ROTATION_ROTATE90,
                     DXGI_MODE_ROTATION_UNSPECIFIED,
                 },
-                CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST,
-                DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT,
+                CreateDXGIFactory1, IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1,
+                IDXGIOutputDuplication, IDXGIResource, DXGI_ERROR_ACCESS_LOST,
+                DXGI_ERROR_INVALID_CALL, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT,
                 DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTDUPL_POINTER_SHAPE_INFO,
                 DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR,
                 DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR,
                 DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME, DXGI_OUTPUT_DESC,
-                IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1,
-                IDXGIOutputDuplication, IDXGIResource,
             },
         },
     },
 };
 
 use crate::{
-    select_display_info, CaptureBackend, CaptureConfig, CaptureError,
-    CaptureSession, CaptureTarget, CapturedFrame, DesktopBounds, DisplayId,
-    DisplayInfo, DisplayRotation, FrameMetadata, FrameUpdateKind,
-    PointerPosition, PointerShape, PointerShapeKind, PointerUpdate,
+    select_display_info, CaptureBackend, CaptureConfig, CaptureError, CaptureSession,
+    CaptureTarget, CapturedFrame, DesktopBounds, DisplayId, DisplayInfo, DisplayRotation,
+    FrameMetadata, FrameUpdateKind, PointerPosition, PointerShape, PointerShapeKind, PointerUpdate,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -73,7 +67,10 @@ impl CaptureBackend for DxgiCaptureBackend {
     ) -> Result<Box<dyn CaptureSession>, CaptureError> {
         let mut outputs = enumerate_outputs()?;
         let selected_info = select_display_info(
-            &outputs.iter().map(|output| output.info.clone()).collect::<Vec<_>>(),
+            &outputs
+                .iter()
+                .map(|output| output.info.clone())
+                .collect::<Vec<_>>(),
             &target,
         )?;
         let selected = outputs
@@ -97,7 +94,10 @@ impl CaptureBackend for DxgiCaptureBackend {
                         attempt + 1
                     ));
                     if attempt > 0 {
-                        eprintln!("[capture] DuplicateOutput succeeded on attempt {}", attempt + 1);
+                        eprintln!(
+                            "[capture] DuplicateOutput succeeded on attempt {}",
+                            attempt + 1
+                        );
                     }
                     duplication = Some(dup);
                     break;
@@ -124,7 +124,10 @@ impl CaptureBackend for DxgiCaptureBackend {
                              Check Windows TDR settings: TdrLevel and TdrDelay in \
                              HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers."
                         );
-                        return Err(map_duplication_error("IDXGIOutput1::DuplicateOutput", error));
+                        return Err(map_duplication_error(
+                            "IDXGIOutput1::DuplicateOutput",
+                            error,
+                        ));
                     }
                 }
             }
@@ -150,10 +153,7 @@ pub(crate) struct WindowsFrame {
 }
 
 impl WindowsFrame {
-    fn new(
-        texture: ID3D11Texture2D,
-        release: Arc<FrameRelease>,
-    ) -> Self {
+    fn new(texture: ID3D11Texture2D, release: Arc<FrameRelease>) -> Self {
         Self {
             texture,
             _release: release,
@@ -198,16 +198,20 @@ impl CaptureSession for DxgiCaptureSession {
         } {
             Ok(()) => {}
             Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
-            Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST => {
-                return self.recover_from_access_lost();
-            }
             Err(error) => {
+                if let Some(reason) = recoverable_acquire_error_reason(error.code()) {
+                    return self.recover_from_duplication_loss(reason);
+                }
                 trace_capture(format!(
                     "AcquireNextFrame error: 0x{:08x} {}",
                     error.code().0 as u32,
                     error.message()
                 ));
-                eprintln!("[capture] AcquireNextFrame error: 0x{:08x} {}", error.code().0 as u32, error.message());
+                eprintln!(
+                    "[capture] AcquireNextFrame error: 0x{:08x} {}",
+                    error.code().0 as u32,
+                    error.message()
+                );
                 return Err(CaptureError::from_windows(
                     "IDXGIOutputDuplication::AcquireNextFrame",
                     error,
@@ -216,15 +220,11 @@ impl CaptureSession for DxgiCaptureSession {
         }
 
         let pointer = self.capture_pointer_update(&frame_info)?;
-        let update_kind = FrameUpdateKind::from_flags(
-            frame_info.LastPresentTime != 0,
-            pointer.is_some(),
-        );
+        let update_kind =
+            FrameUpdateKind::from_flags(frame_info.LastPresentTime != 0, pointer.is_some());
         trace_capture(format!(
             "frame update_kind={:?} accumulated_frames={} pointer_shape_bytes={}",
-            update_kind,
-            frame_info.AccumulatedFrames,
-            frame_info.PointerShapeBufferSize
+            update_kind, frame_info.AccumulatedFrames, frame_info.PointerShapeBufferSize
         ));
 
         let maybe_texture = if let Some(desktop_resource) = desktop_resource {
@@ -298,6 +298,18 @@ impl CaptureSession for DxgiCaptureSession {
 }
 
 impl DxgiCaptureSession {
+    fn refresh_display_info(&mut self) -> Result<(), CaptureError> {
+        let output_desc = unsafe { self.output.GetDesc() }
+            .map_err(|error| CaptureError::from_windows("IDXGIOutput::GetDesc", error))?;
+        self.display_info = display_info_from_desc(
+            self.display_info.id.adapter_luid,
+            self.display_info.id.output_index,
+            &self.display_info.adapter_name,
+            &output_desc,
+        );
+        Ok(())
+    }
+
     fn capture_pointer_update(
         &self,
         frame_info: &DXGI_OUTDUPL_FRAME_INFO,
@@ -312,10 +324,7 @@ impl DxgiCaptureSession {
             visible: frame_info.PointerPosition.Visible.as_bool(),
         };
         let shape = if frame_info.PointerShapeBufferSize > 0 {
-            Some(self.capture_pointer_shape(
-                frame_info.PointerShapeBufferSize,
-                position,
-            )?)
+            Some(self.capture_pointer_shape(frame_info.PointerShapeBufferSize, position)?)
         } else {
             None
         };
@@ -362,16 +371,22 @@ impl DxgiCaptureSession {
         }
     }
 
-    /// Handle DXGI_ERROR_ACCESS_LOST by recreating the output duplication.
+    /// Handle transient DXGI duplication invalidation by recreating the output duplication.
     ///
     /// This commonly happens on desktop composition changes such as window
     /// focus switches, resolution changes, or DWM recomposition events.
     /// Returns `Ok(None)` on success so the caller retries on the next tick.
-    fn recover_from_access_lost(&mut self) -> Result<Option<CapturedFrame>, CaptureError> {
-        eprintln!("[capture] DXGI_ERROR_ACCESS_LOST — attempting recovery (previous recoveries: {})", self.access_lost_recoveries);
-        trace_capture(format!(
-            "DXGI_ERROR_ACCESS_LOST attempting recovery previous_recoveries={}",
+    fn recover_from_duplication_loss(
+        &mut self,
+        reason: &'static str,
+    ) -> Result<Option<CapturedFrame>, CaptureError> {
+        eprintln!(
+            "[capture] duplication invalidated ({reason}) — attempting recovery (previous recoveries: {})",
             self.access_lost_recoveries
+        );
+        trace_capture(format!(
+            "duplication invalidated reason={} previous_recoveries={}",
+            reason, self.access_lost_recoveries
         ));
 
         // Drop the outstanding frame release (the old duplication is invalid).
@@ -382,13 +397,30 @@ impl DxgiCaptureSession {
 
         match unsafe { self.output.DuplicateOutput(&self.device) } {
             Ok(new_duplication) => {
+                let previous_bounds = self.display_info.desktop_bounds;
                 self.duplication = new_duplication;
+                self.refresh_display_info()?;
                 self.access_lost_recoveries += 1;
                 trace_capture(format!(
-                    "DXGI recovery succeeded total_recoveries={}",
-                    self.access_lost_recoveries
+                    "DXGI recovery succeeded reason={} total_recoveries={} bounds={}x{}",
+                    reason,
+                    self.access_lost_recoveries,
+                    self.display_info.desktop_bounds.width(),
+                    self.display_info.desktop_bounds.height()
                 ));
-                eprintln!("[capture] DXGI recovery succeeded (total recoveries: {})", self.access_lost_recoveries);
+                eprintln!(
+                    "[capture] DXGI recovery succeeded ({reason}, total recoveries: {})",
+                    self.access_lost_recoveries
+                );
+                if self.display_info.desktop_bounds != previous_bounds {
+                    eprintln!(
+                        "[capture] desktop bounds changed after recovery: {}x{} -> {}x{}",
+                        previous_bounds.width(),
+                        previous_bounds.height(),
+                        self.display_info.desktop_bounds.width(),
+                        self.display_info.desktop_bounds.height()
+                    );
+                }
                 Ok(None)
             }
             Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST => {
@@ -403,7 +435,11 @@ impl DxgiCaptureSession {
                     error.code().0 as u32,
                     error.message()
                 ));
-                eprintln!("[capture] DuplicateOutput recovery failed: 0x{:08x} {}", error.code().0 as u32, error.message());
+                eprintln!(
+                    "[capture] DuplicateOutput recovery failed: 0x{:08x} {}",
+                    error.code().0 as u32,
+                    error.message()
+                );
                 Err(map_duplication_error(
                     "IDXGIOutput1::DuplicateOutput (recovery)",
                     error,
@@ -423,9 +459,7 @@ fn convert_pointer_shape(
         value if value == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0 as u32 => {
             PointerShapeKind::Monochrome
         }
-        value if value == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR.0 as u32 => {
-            PointerShapeKind::Color
-        }
+        value if value == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR.0 as u32 => PointerShapeKind::Color,
         value if value == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR.0 as u32 => {
             PointerShapeKind::MaskedColor
         }
@@ -440,7 +474,12 @@ fn convert_pointer_shape(
             position.visible,
         ),
         PointerShapeKind::Color | PointerShapeKind::MaskedColor | PointerShapeKind::Unknown(_) => {
-            decode_color_pointer_shape(raw_shape, shape_info.Width, shape_info.Height, shape_info.Pitch)
+            decode_color_pointer_shape(
+                raw_shape,
+                shape_info.Width,
+                shape_info.Height,
+                shape_info.Pitch,
+            )
         }
     };
 
@@ -455,12 +494,7 @@ fn convert_pointer_shape(
     }
 }
 
-fn decode_color_pointer_shape(
-    raw_shape: &[u8],
-    width: u32,
-    height: u32,
-    pitch: u32,
-) -> Vec<u8> {
+fn decode_color_pointer_shape(raw_shape: &[u8], width: u32, height: u32, pitch: u32) -> Vec<u8> {
     let mut rgba = vec![0u8; width as usize * height as usize * 4];
     let row_pitch = pitch.max(width * 4) as usize;
     for y in 0..height as usize {
@@ -592,10 +626,8 @@ struct EnumeratedOutput {
 }
 
 fn enumerate_outputs() -> Result<Vec<EnumeratedOutput>, CaptureError> {
-    let factory: IDXGIFactory1 =
-        unsafe { CreateDXGIFactory1() }.map_err(|error| {
-            CaptureError::from_windows("CreateDXGIFactory1", error)
-        })?;
+    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }
+        .map_err(|error| CaptureError::from_windows("CreateDXGIFactory1", error))?;
 
     let mut outputs = Vec::new();
     let mut adapter_index = 0u32;
@@ -610,9 +642,9 @@ fn enumerate_outputs() -> Result<Vec<EnumeratedOutput>, CaptureError> {
             let output_desc = unsafe { output.GetDesc() }
                 .map_err(|error| CaptureError::from_windows("IDXGIOutput::GetDesc", error))?;
             if output_desc.AttachedToDesktop.as_bool() {
-                let output1: IDXGIOutput1 = output.cast().map_err(|error| {
-                    CaptureError::from_windows("IDXGIOutput::cast", error)
-                })?;
+                let output1: IDXGIOutput1 = output
+                    .cast()
+                    .map_err(|error| CaptureError::from_windows("IDXGIOutput::cast", error))?;
                 outputs.push(EnumeratedOutput {
                     info: display_info_from_desc(
                         adapter_luid,
@@ -672,9 +704,7 @@ fn next_output(
     }
 }
 
-fn create_device_for_adapter(
-    adapter: &IDXGIAdapter1,
-) -> Result<ID3D11Device, CaptureError> {
+fn create_device_for_adapter(adapter: &IDXGIAdapter1) -> Result<ID3D11Device, CaptureError> {
     let adapter: IDXGIAdapter = adapter
         .cast()
         .map_err(|error| CaptureError::from_windows("IDXGIAdapter1::cast", error))?;
@@ -734,13 +764,20 @@ fn display_info_from_desc(
     }
 }
 
-fn map_duplication_error(
-    operation: &'static str,
-    error: windows::core::Error,
-) -> CaptureError {
+fn map_duplication_error(operation: &'static str, error: windows::core::Error) -> CaptureError {
     match error.code() {
         DXGI_ERROR_ACCESS_LOST => CaptureError::AccessLost,
         _ => CaptureError::from_windows(operation, error),
+    }
+}
+
+fn recoverable_acquire_error_reason(code: windows::core::HRESULT) -> Option<&'static str> {
+    if code == DXGI_ERROR_ACCESS_LOST {
+        Some("access_lost")
+    } else if code == DXGI_ERROR_INVALID_CALL {
+        Some("invalid_call")
+    } else {
+        None
     }
 }
 
@@ -751,4 +788,25 @@ fn utf16_slice_to_string(value: &[u16]) -> String {
 
 fn luid_to_i64(luid: LUID) -> i64 {
     ((luid.HighPart as i64) << 32) | i64::from(luid.LowPart)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recoverable_acquire_error_reason;
+    use windows::Win32::Graphics::Dxgi::{
+        DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_INVALID_CALL, DXGI_ERROR_NOT_FOUND,
+    };
+
+    #[test]
+    fn acquire_recovery_reason_classifies_transient_duplication_loss() {
+        assert_eq!(
+            recoverable_acquire_error_reason(DXGI_ERROR_ACCESS_LOST),
+            Some("access_lost")
+        );
+        assert_eq!(
+            recoverable_acquire_error_reason(DXGI_ERROR_INVALID_CALL),
+            Some("invalid_call")
+        );
+        assert_eq!(recoverable_acquire_error_reason(DXGI_ERROR_NOT_FOUND), None);
+    }
 }

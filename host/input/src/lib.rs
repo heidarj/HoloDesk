@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    error::Error,
-    fmt,
-};
+use std::{collections::BTreeSet, error::Error, fmt};
 
 use holobridge_capture::DesktopBounds;
 
@@ -38,29 +34,13 @@ pub enum InputError {
 }
 
 pub trait InputBackend: Send {
-    fn move_pointer(
-        &mut self,
-        desktop_x: i32,
-        desktop_y: i32,
-    ) -> Result<(), InputError>;
+    fn move_pointer(&mut self, desktop_x: i32, desktop_y: i32) -> Result<(), InputError>;
 
-    fn button(
-        &mut self,
-        button: PointerButton,
-        phase: ButtonPhase,
-    ) -> Result<(), InputError>;
+    fn button(&mut self, button: PointerButton, phase: ButtonPhase) -> Result<(), InputError>;
 
-    fn wheel(
-        &mut self,
-        delta_x: i32,
-        delta_y: i32,
-    ) -> Result<(), InputError>;
+    fn wheel(&mut self, delta_x: i32, delta_y: i32) -> Result<(), InputError>;
 
-    fn key(
-        &mut self,
-        key_code: u16,
-        phase: KeyPhase,
-    ) -> Result<(), InputError>;
+    fn key(&mut self, key_code: u16, phase: KeyPhase) -> Result<(), InputError>;
 }
 
 pub struct InputSession {
@@ -111,10 +91,7 @@ impl InputSession {
         ))
     }
 
-    pub fn with_backend(
-        display_bounds: DesktopBounds,
-        backend: Box<dyn InputBackend>,
-    ) -> Self {
+    pub fn with_backend(display_bounds: DesktopBounds, backend: Box<dyn InputBackend>) -> Self {
         Self {
             display_bounds,
             input_focus_active: true,
@@ -196,11 +173,7 @@ impl InputSession {
         Ok(())
     }
 
-    pub fn handle_key(
-        &mut self,
-        key_code: u16,
-        phase: KeyPhase,
-    ) -> Result<(), InputError> {
+    pub fn handle_key(&mut self, key_code: u16, phase: KeyPhase) -> Result<(), InputError> {
         if !self.input_focus_active {
             return Ok(());
         }
@@ -221,10 +194,7 @@ impl InputSession {
         Ok(())
     }
 
-    pub fn set_input_focus(
-        &mut self,
-        active: bool,
-    ) -> Result<(), InputError> {
+    pub fn set_input_focus(&mut self, active: bool) -> Result<(), InputError> {
         if self.input_focus_active == active {
             return Ok(());
         }
@@ -256,11 +226,16 @@ impl InputSession {
         self.display_bounds
     }
 
-    fn desktop_point(
-        &self,
-        x: i32,
-        y: i32,
-    ) -> (i32, i32) {
+    pub fn update_display_bounds(&mut self, display_bounds: DesktopBounds) -> bool {
+        if self.display_bounds == display_bounds {
+            return false;
+        }
+
+        self.display_bounds = display_bounds;
+        true
+    }
+
+    fn desktop_point(&self, x: i32, y: i32) -> (i32, i32) {
         let width = self.display_bounds.width().saturating_sub(1) as i32;
         let height = self.display_bounds.height().saturating_sub(1) as i32;
         let clamped_x = x.clamp(0, width.max(0));
@@ -285,35 +260,19 @@ impl PlatformInputBackend {
 
 #[cfg(not(windows))]
 impl InputBackend for PlatformInputBackend {
-    fn move_pointer(
-        &mut self,
-        _desktop_x: i32,
-        _desktop_y: i32,
-    ) -> Result<(), InputError> {
+    fn move_pointer(&mut self, _desktop_x: i32, _desktop_y: i32) -> Result<(), InputError> {
         Err(InputError::UnsupportedPlatform)
     }
 
-    fn button(
-        &mut self,
-        _button: PointerButton,
-        _phase: ButtonPhase,
-    ) -> Result<(), InputError> {
+    fn button(&mut self, _button: PointerButton, _phase: ButtonPhase) -> Result<(), InputError> {
         Err(InputError::UnsupportedPlatform)
     }
 
-    fn wheel(
-        &mut self,
-        _delta_x: i32,
-        _delta_y: i32,
-    ) -> Result<(), InputError> {
+    fn wheel(&mut self, _delta_x: i32, _delta_y: i32) -> Result<(), InputError> {
         Err(InputError::UnsupportedPlatform)
     }
 
-    fn key(
-        &mut self,
-        _key_code: u16,
-        _phase: KeyPhase,
-    ) -> Result<(), InputError> {
+    fn key(&mut self, _key_code: u16, _phase: KeyPhase) -> Result<(), InputError> {
         Err(InputError::UnsupportedPlatform)
     }
 }
@@ -330,27 +289,18 @@ impl PlatformInputBackend {
 
 #[cfg(windows)]
 impl InputBackend for PlatformInputBackend {
-    fn move_pointer(
-        &mut self,
-        desktop_x: i32,
-        desktop_y: i32,
-    ) -> Result<(), InputError> {
+    fn move_pointer(&mut self, desktop_x: i32, desktop_y: i32) -> Result<(), InputError> {
         use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
         unsafe {
-            SetCursorPos(desktop_x, desktop_y)
-                .map_err(|error| InputError::WindowsApi {
-                    operation: "SetCursorPos",
-                    detail: error.message(),
-                })
+            SetCursorPos(desktop_x, desktop_y).map_err(|error| InputError::WindowsApi {
+                operation: "SetCursorPos",
+                detail: error.message(),
+            })
         }
     }
 
-    fn button(
-        &mut self,
-        button: PointerButton,
-        phase: ButtonPhase,
-    ) -> Result<(), InputError> {
+    fn button(&mut self, button: PointerButton, phase: ButtonPhase) -> Result<(), InputError> {
         use windows::Win32::UI::Input::KeyboardAndMouse::{
             SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
             MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
@@ -392,11 +342,7 @@ impl InputBackend for PlatformInputBackend {
         Ok(())
     }
 
-    fn wheel(
-        &mut self,
-        delta_x: i32,
-        delta_y: i32,
-    ) -> Result<(), InputError> {
+    fn wheel(&mut self, delta_x: i32, delta_y: i32) -> Result<(), InputError> {
         use windows::Win32::UI::Input::KeyboardAndMouse::{
             SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL,
             MOUSEINPUT,
@@ -450,13 +396,9 @@ impl InputBackend for PlatformInputBackend {
         Ok(())
     }
 
-    fn key(
-        &mut self,
-        key_code: u16,
-        phase: KeyPhase,
-    ) -> Result<(), InputError> {
+    fn key(&mut self, key_code: u16, phase: KeyPhase) -> Result<(), InputError> {
         use windows::Win32::UI::Input::KeyboardAndMouse::{
-            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
             KEYEVENTF_KEYUP, VIRTUAL_KEY,
         };
 
@@ -495,11 +437,10 @@ impl InputBackend for PlatformInputBackend {
 #[cfg(windows)]
 fn map_hid_usage_to_virtual_key(key_code: u16) -> Result<u16, InputError> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        VK_APPS, VK_BACK, VK_CAPITAL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F10,
-        VK_F11, VK_F12, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME,
-        VK_INSERT, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_NEXT, VK_PRIOR,
-        VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SPACE, VK_TAB,
-        VK_UP,
+        VK_APPS, VK_BACK, VK_CAPITAL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F10, VK_F11,
+        VK_F12, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME, VK_INSERT,
+        VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_NEXT, VK_PRIOR, VK_RCONTROL,
+        VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SPACE, VK_TAB, VK_UP,
     };
 
     let value = match key_code {
@@ -579,10 +520,14 @@ fn map_hid_usage_to_virtual_key(key_code: u16) -> Result<u16, InputError> {
 impl fmt::Display for InputError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedPlatform => formatter.write_str("input replay is unsupported on this platform"),
+            Self::UnsupportedPlatform => {
+                formatter.write_str("input replay is unsupported on this platform")
+            }
             Self::InvalidButton(button) => write!(formatter, "invalid pointer button: {button}"),
             Self::InvalidPhase(phase) => write!(formatter, "invalid input phase: {phase}"),
-            Self::UnsupportedKeyCode(key_code) => write!(formatter, "unsupported hardware key code: {key_code}"),
+            Self::UnsupportedKeyCode(key_code) => {
+                write!(formatter, "unsupported hardware key code: {key_code}")
+            }
             Self::WindowsApi { operation, detail } => {
                 write!(formatter, "{operation} failed: {detail}")
             }
@@ -617,11 +562,7 @@ mod tests {
     }
 
     impl InputBackend for RecordingBackend {
-        fn move_pointer(
-            &mut self,
-            desktop_x: i32,
-            desktop_y: i32,
-        ) -> Result<(), InputError> {
+        fn move_pointer(&mut self, desktop_x: i32, desktop_y: i32) -> Result<(), InputError> {
             self.actions
                 .lock()
                 .unwrap()
@@ -629,11 +570,7 @@ mod tests {
             Ok(())
         }
 
-        fn button(
-            &mut self,
-            button: PointerButton,
-            phase: ButtonPhase,
-        ) -> Result<(), InputError> {
+        fn button(&mut self, button: PointerButton, phase: ButtonPhase) -> Result<(), InputError> {
             self.actions
                 .lock()
                 .unwrap()
@@ -641,11 +578,7 @@ mod tests {
             Ok(())
         }
 
-        fn wheel(
-            &mut self,
-            delta_x: i32,
-            delta_y: i32,
-        ) -> Result<(), InputError> {
+        fn wheel(&mut self, delta_x: i32, delta_y: i32) -> Result<(), InputError> {
             self.actions
                 .lock()
                 .unwrap()
@@ -653,11 +586,7 @@ mod tests {
             Ok(())
         }
 
-        fn key(
-            &mut self,
-            key_code: u16,
-            phase: KeyPhase,
-        ) -> Result<(), InputError> {
+        fn key(&mut self, key_code: u16, phase: KeyPhase) -> Result<(), InputError> {
             self.actions
                 .lock()
                 .unwrap()
@@ -731,6 +660,60 @@ mod tests {
         assert_eq!(
             *actions.lock().unwrap(),
             vec![RecordedAction::Move(110, 70)]
+        );
+    }
+
+    #[test]
+    fn updating_display_bounds_changes_future_pointer_clamping() {
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let mut session = InputSession::with_backend(
+            test_bounds(),
+            Box::new(RecordingBackend::new(Arc::clone(&actions))),
+        );
+
+        assert!(session.update_display_bounds(DesktopBounds {
+            left: 100,
+            top: 50,
+            right: 900,
+            bottom: 650,
+        }));
+        session.handle_pointer_motion(999, 999, 1).unwrap();
+
+        assert_eq!(
+            *actions.lock().unwrap(),
+            vec![RecordedAction::Move(899, 649)]
+        );
+    }
+
+    #[test]
+    fn updating_display_bounds_preserves_pressed_input_state() {
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let mut session = InputSession::with_backend(
+            test_bounds(),
+            Box::new(RecordingBackend::new(Arc::clone(&actions))),
+        );
+
+        session
+            .handle_pointer_button(PointerButton::Left, ButtonPhase::Down, 10, 20, 1)
+            .unwrap();
+        session.handle_key(4, KeyPhase::Down).unwrap();
+        assert!(session.update_display_bounds(DesktopBounds {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        }));
+        session.release_all().unwrap();
+
+        assert_eq!(
+            *actions.lock().unwrap(),
+            vec![
+                RecordedAction::Move(110, 70),
+                RecordedAction::Button(PointerButton::Left, ButtonPhase::Down),
+                RecordedAction::Key(4, KeyPhase::Down),
+                RecordedAction::Button(PointerButton::Left, ButtonPhase::Up),
+                RecordedAction::Key(4, KeyPhase::Up),
+            ]
         );
     }
 }

@@ -4,9 +4,9 @@
 
 ## Current Milestone
 
-**Milestone 7 – implementation landed, pending on-device acceptance**
+**Milestone 7 – implementation landed, host stability hardening in progress**
 
-Milestone 6 is now validated locally again on macOS, and the Milestone 7 code path has landed across the host, shared Swift package, and canonical visionOS app. The host now accepts hybrid return input (pointer motion by datagram, discrete input by reliable control messages), replays input through a new session-scoped Win32 input layer, and releases stuck buttons / keys on focus loss or disconnect. The Apple client now opens a dedicated stream window, keeps the original window as a utility shell, moves controls into a stream-window ornament, and captures remote input only from the visible video surface. Automated validation is green; the remaining work is real Apple Vision Pro acceptance for ornament interaction, activation-event suppression, and gesture tuning.
+Milestone 6 is now validated locally again on macOS, and the Milestone 7 code path has landed across the host, shared Swift package, and canonical visionOS app. The host now accepts hybrid return input (pointer motion by datagram, discrete input by reliable control messages), replays input through a new session-scoped Win32 input layer, and releases stuck buttons / keys on focus loss or disconnect. The Apple client now opens a dedicated stream window, keeps the original window as a utility shell, moves controls into a stream-window ornament, and captures remote input only from the visible video surface. The Windows `artifacts/e2e` host logs from 2026-04-09 and 2026-04-10 exposed a few host-side stability gaps around capture recovery, stalled frame waits, reconnect after wedged teardown, and stale input bounds after display changes; the host-side hardening for those paths has now landed. The remaining work is a real Windows + Apple Vision Pro rerun to confirm the new host behavior under cursor-heavy interaction, disconnect/rejoin, resolution changes, and access-loss recovery.
 
 ---
 
@@ -38,6 +38,12 @@ Milestone 6 is now validated locally again on macOS, and the Milestone 7 code pa
 - Added a host-side pointer overlay transport path: pointer position/visibility now travels as a lightweight QUIC datagram, pointer-shape changes travel as reliable control messages, and pointer-only desktop duplication updates no longer have to traverse the H.264 encoder when the client negotiated pointer overlay support.
 - Added stage-aware video worker telemetry and a watchdog in `host/transport/` that tracks the current capture/encode/send stage, logs periodic heartbeats, records the last HRESULT/detail, and closes the active stream loudly if the worker wedges instead of silently stopping frame delivery.
 - Added documented trace switches for live debugging: `HOLOBRIDGE_CAPTURE_TRACE`, `HOLOBRIDGE_VIDEO_TRACE`, and the pre-existing `HOLOBRIDGE_ENCODE_TRACE`.
+- Reviewed the 2026-04-09 Windows `artifacts/e2e` host logs and traced three concrete stream-stability failures in the Rust host path: a permanent reconnect block after an abandoned worker, a watchdog blind spot when `AcquireNextFrame` stopped returning, and an encoder/dimension mismatch immediately after DXGI access-loss recovery.
+- Hardened the host video worker so stalled wait stages are now treated as watchdog failures when capture makes no progress, first-frame waits record timeout/pointer-only progress correctly, capture recovery refreshes display bounds, and the encoder is recreated automatically if capture resumes at a different size after DXGI recovery.
+- Relaxed the abandoned-worker path so the next stream now retries `DuplicateOutput` instead of forcing a manual host restart, and the worker now clears its abort handle on exit so teardown state does not linger longer than necessary.
+- Reviewed the oldest 2026-04-10 no-auth `artifacts/e2e` logs and confirmed the post-drop `QUIC connection failed` path was still partly host-side: the server listener was serialized behind slow per-session teardown, so a wedged video worker could block the next incoming connection even though no resume token was involved.
+- Refactored `host/transport/` so accepted QUIC connections now run in per-connection tasks while the listener keeps accepting new connections; `serve_n()` stops accepting after its target count without closing active sessions early, and loopback coverage now proves both auth-resume and no-auth reconnect succeed even while the previous stream is intentionally delayed in teardown.
+- Extended the host input and capture layers so live desktop bounds can be updated in-place without dropping pressed-input state, video startup/recovery now syncs those bounds into the active `InputSession`, and `DXGI_ERROR_INVALID_CALL` during `AcquireNextFrame` is treated as a transient duplication reset alongside `DXGI_ERROR_ACCESS_LOST`.
 - Extended the shared Apple client package and visionOS app pipeline to understand pointer-state datagrams and `pointer_shape` control messages, maintain cursor state separately from decoded video frames, and render a native cursor overlay above the video surface.
 - Added focused tests for pointer update classification, pointer datagram codec round-trips, pointer-shape control-message round-trips, session forwarding of `pointer_shape`, and pointer-only host dispatch behavior.
 - Extracted the Apple client transport/session/datagram code into a new local Swift package under `client-avp/HoloBridge/Packages/HoloBridgeClient`, with `HoloBridgeClientCore`, `HoloBridgeClientTestAuth`, and a headless `holobridge-client-smoke` executable target.
@@ -161,6 +167,9 @@ Milestone 6 is now validated locally again on macOS, and the Milestone 7 code pa
 - [x] `xcodebuild -project client-avp/HoloBridge/HoloBridge.xcodeproj -scheme HoloBridge -destination 'generic/platform=visionOS Simulator' build` passes on macOS with the new utility-shell + stream-window design.
 - [x] The canonical visionOS app now keeps connect / status / disconnect UI in the original shell window and opens a dedicated stream window for the video surface.
 - [x] The host now accepts pointer motion over QUIC datagrams and button / wheel / keyboard / focus updates over the reliable control stream after auth or resume.
+- [x] `cargo test -p holobridge-transport`, `cargo test -p holobridge-capture`, and `cargo test -p holobridge-input` all pass on the Windows host on 2026-04-10 after the host stream-stability hardening pass.
+- [x] Windows host loopback coverage now includes delayed-teardown reconnect acceptance for both `auth -> resume` and no-auth fresh reconnect, plus unit coverage for `InputSession::update_display_bounds()` and `AcquireNextFrame` recovery classification.
+- [ ] A fresh Windows `scripts/e2e.ps1 -Verbose` rerun has not been completed yet after the 2026-04-10 hardening changes, so the new watchdog/recovery behavior is still validated only by targeted log analysis plus crate tests.
 - [ ] Real Apple Vision Pro acceptance for Milestone 7 is still pending: separate-window UX, ornament-safe interaction, first-activation suppression, hardware-key forwarding, and device-measured input latency still need on-device verification.
 
 ---
@@ -168,13 +177,14 @@ Milestone 6 is now validated locally again on macOS, and the Milestone 7 code pa
 ## Known Limitations
 
 - Masked-color Windows cursor shapes are currently approximated as RGBA images on the host. Typical color and monochrome cursors are handled, but XOR-style masked-color cursors may not render perfectly yet.
-- The host watchdog now fails loudly when the worker stalls, but the underlying Media Foundation / D3D11 calls are still in-process. If Windows wedges inside a driver path that ignores flush/close, a full process restart may still be required.
+- The host no longer hard-blocks reconnect after an abandoned video worker, but the underlying Media Foundation / D3D11 calls are still in-process. If Windows wedges inside a driver path that ignores flush/close, reconnect may still take one `DuplicateOutput` retry window and a full process restart may still be required in the worst case.
 - The capture crate intentionally exposes GPU textures only on Windows. Non-Windows builds compile for workspace health, but all capture entrypoints return `UnsupportedPlatform`.
 - The Media Foundation backend currently selects the first compatible hardware H.264 MFT. There is no vendor-specific encoder selection or capability ranking yet.
 - Authorization is still effectively first-user bootstrap by default; there is no explicit admin flow yet for reviewing or pre-registering Apple `sub` values.
 - Resume state is memory-only on both sides in Milestone 3. If the host process or the app restarts, the user must authenticate again.
 - The new Apple shared client package is structurally in place and tested with mocked transports, but the real macOS/visionOS `Network.framework` QUIC media path is not yet accepted. The local smoke executable currently fails during real QUIC connection establishment against the Rust host, before auth or media delivery begins.
 - The dedicated stream window and return-input path now build and test on macOS, but the Milestone 7 interaction model has not yet been exercised on a real Apple Vision Pro. Ornament-safe interaction and first-activation suppression still need device validation.
+- No-auth automatic reconnect behavior still needs client-side verification on macOS/visionOS. The host now accepts immediate fresh reconnects again in loopback tests, but no-auth sessions do not use resume tokens, so any remaining automatic-retry UX issues after this pass are likely in the Apple client reconnect policy rather than the Rust host listener.
 - Milestone 7 intentionally supports only the `absolute surface` pointer policy. Relative trackpad / explicit capture modes are deferred to Milestone 7.1.
 - Software keyboard / text-entry forwarding is not part of Milestone 7. Only hardware-key replay is implemented.
 - Scroll replay currently uses a best-effort two-finger pan mapping on the client side and may need device tuning.
@@ -184,7 +194,7 @@ Milestone 6 is now validated locally again on macOS, and the Milestone 7 code pa
 
 ## Next Recommended Step
 
-Run the Milestone 7 manual acceptance pass on a real Apple Vision Pro against a Windows host: verify separate-window presentation, ornament-safe interaction, first-activation suppression, drag / wheel / hardware-key replay, and sequence-number-based latency measurements. If that pass is clean, close Milestone 7 and move to Milestone 8 audio; if device testing exposes UX gaps, carve the follow-up work into Milestone 7.1 for alternate pointer policies, text entry, and gesture tuning.
+Rerun `scripts/e2e.ps1 -Verbose` on the Windows host with cursor-heavy interaction, remote drag/wheel input, abrupt disconnect/rejoin, and desktop resolution/access-loss triggers so the new host watchdog, concurrent reconnect handling, DXGI recovery, and input-bounds refresh paths are exercised end to end. If no-auth interruption still reports `QUIC connection failed` after this host pass, take the next investigation on macOS/visionOS in the client reconnect policy because the Rust host now has explicit loopback coverage for immediate reconnect acceptance.
 
 ---
 

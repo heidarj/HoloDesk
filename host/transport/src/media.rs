@@ -144,7 +144,9 @@ impl MediaDatagramHeader {
         }
         let packet_kind = datagram[2];
         if packet_kind != MEDIA_DATAGRAM_KIND_VIDEO {
-            return Err(MediaDatagramError::UnexpectedPacketKind { actual: packet_kind });
+            return Err(MediaDatagramError::UnexpectedPacketKind {
+                actual: packet_kind,
+            });
         }
 
         let fragment_index = u16::from_be_bytes([datagram[12], datagram[13]]);
@@ -152,11 +154,15 @@ impl MediaDatagramHeader {
         validate_fragment_shape(fragment_index, fragment_count)?;
 
         let header = Self {
-            access_unit_id: u64::from_be_bytes(datagram[4..12].try_into().expect("header access unit id")),
+            access_unit_id: u64::from_be_bytes(
+                datagram[4..12].try_into().expect("header access unit id"),
+            ),
             fragment_index,
             fragment_count,
             pts_100ns: i64::from_be_bytes(datagram[16..24].try_into().expect("header pts")),
-            duration_100ns: i64::from_be_bytes(datagram[24..32].try_into().expect("header duration")),
+            duration_100ns: i64::from_be_bytes(
+                datagram[24..32].try_into().expect("header duration"),
+            ),
             is_keyframe: (datagram[1] & KEYFRAME_FLAG) != 0,
         };
         Ok((header, &datagram[MEDIA_DATAGRAM_HEADER_LEN..]))
@@ -167,7 +173,11 @@ impl PointerStateDatagram {
     pub fn encode(&self) -> [u8; POINTER_DATAGRAM_HEADER_LEN] {
         let mut encoded = [0u8; POINTER_DATAGRAM_HEADER_LEN];
         encoded[0] = MEDIA_DATAGRAM_VERSION;
-        encoded[1] = if self.visible { POINTER_VISIBLE_FLAG } else { 0 };
+        encoded[1] = if self.visible {
+            POINTER_VISIBLE_FLAG
+        } else {
+            0
+        };
         encoded[2] = MEDIA_DATAGRAM_KIND_POINTER_STATE;
         encoded[4..12].copy_from_slice(&self.sequence.to_be_bytes());
         encoded[12..16].copy_from_slice(&self.x.to_be_bytes());
@@ -187,7 +197,9 @@ impl PointerStateDatagram {
         }
         let packet_kind = datagram[2];
         if packet_kind != MEDIA_DATAGRAM_KIND_POINTER_STATE {
-            return Err(MediaDatagramError::UnexpectedPacketKind { actual: packet_kind });
+            return Err(MediaDatagramError::UnexpectedPacketKind {
+                actual: packet_kind,
+            });
         }
 
         Ok(Self {
@@ -222,7 +234,9 @@ impl InputPointerDatagram {
         }
         let packet_kind = datagram[2];
         if packet_kind != MEDIA_DATAGRAM_KIND_INPUT_POINTER_MOTION {
-            return Err(MediaDatagramError::UnexpectedPacketKind { actual: packet_kind });
+            return Err(MediaDatagramError::UnexpectedPacketKind {
+                actual: packet_kind,
+            });
         }
 
         Ok(Self {
@@ -264,10 +278,11 @@ impl H264DatagramPacketizer {
         }
 
         let fragment_count = data.len().div_ceil(max_payload_bytes);
-        let fragment_count_u16 =
-            u16::try_from(fragment_count).map_err(|_| MediaDatagramError::FragmentCountTooLarge {
+        let fragment_count_u16 = u16::try_from(fragment_count).map_err(|_| {
+            MediaDatagramError::FragmentCountTooLarge {
                 actual: fragment_count,
-            })?;
+            }
+        })?;
 
         let access_unit_id = self.next_access_unit_id;
         self.next_access_unit_id = self.next_access_unit_id.saturating_add(1);
@@ -286,8 +301,7 @@ impl H264DatagramPacketizer {
                 is_keyframe,
             };
             let header_bytes = header.encode()?;
-            let mut datagram =
-                Vec::with_capacity(MEDIA_DATAGRAM_HEADER_LEN + payload.len());
+            let mut datagram = Vec::with_capacity(MEDIA_DATAGRAM_HEADER_LEN + payload.len());
             datagram.extend_from_slice(&header_bytes);
             datagram.extend_from_slice(payload);
             datagrams.push(Bytes::from(datagram));
@@ -359,14 +373,15 @@ impl H264DatagramReassembler {
             }
         }
 
-        let entry = self.incomplete.entry(header.access_unit_id).or_insert_with(|| {
-            IncompleteAccessUnit {
+        let entry = self
+            .incomplete
+            .entry(header.access_unit_id)
+            .or_insert_with(|| IncompleteAccessUnit {
                 first_seen_at: now,
                 fragments: vec![None; header.fragment_count as usize],
                 received_fragments: 0,
                 header: header.clone(),
-            }
-        });
+            });
 
         if entry.header.fragment_count != header.fragment_count
             || entry.header.pts_100ns != header.pts_100ns
@@ -418,9 +433,7 @@ pub fn negotiated_datagram_payload_limit(
         return None;
     }
 
-    Some(
-        configured_payload_cap.min(peer_max_datagram_size - MEDIA_DATAGRAM_HEADER_LEN),
-    )
+    Some(configured_payload_cap.min(peer_max_datagram_size - MEDIA_DATAGRAM_HEADER_LEN))
 }
 
 fn validate_fragment_shape(
@@ -428,7 +441,9 @@ fn validate_fragment_shape(
     fragment_count: u16,
 ) -> Result<(), MediaDatagramError> {
     if fragment_count == 0 {
-        return Err(MediaDatagramError::InvalidFragmentCount { actual: fragment_count });
+        return Err(MediaDatagramError::InvalidFragmentCount {
+            actual: fragment_count,
+        });
     }
     if fragment_index >= fragment_count {
         return Err(MediaDatagramError::InvalidFragmentIndex {
@@ -443,7 +458,10 @@ impl fmt::Display for MediaDatagramError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::HeaderTooShort { actual } => {
-                write!(formatter, "media datagram shorter than header: {actual} bytes")
+                write!(
+                    formatter,
+                    "media datagram shorter than header: {actual} bytes"
+                )
             }
             Self::UnsupportedVersion { actual } => {
                 write!(formatter, "unsupported media datagram version: {actual}")
@@ -461,10 +479,16 @@ impl fmt::Display for MediaDatagramError {
                 )
             }
             Self::EmptyPayload { access_unit_id } => {
-                write!(formatter, "media datagram payload is empty for access unit {access_unit_id}")
+                write!(
+                    formatter,
+                    "media datagram payload is empty for access unit {access_unit_id}"
+                )
             }
             Self::FragmentCountTooLarge { actual } => {
-                write!(formatter, "access unit produced too many fragments: {actual}")
+                write!(
+                    formatter,
+                    "access unit produced too many fragments: {actual}"
+                )
             }
             Self::AccessUnitPayloadEmpty => {
                 formatter.write_str("encoded access unit payload is empty")
@@ -479,7 +503,10 @@ impl fmt::Display for MediaDatagramError {
                 )
             }
             Self::PointerDatagramTooShort { actual } => {
-                write!(formatter, "pointer datagram shorter than header: {actual} bytes")
+                write!(
+                    formatter,
+                    "pointer datagram shorter than header: {actual} bytes"
+                )
             }
         }
     }
@@ -491,8 +518,8 @@ impl Error for MediaDatagramError {}
 mod tests {
     use super::{
         negotiated_datagram_payload_limit, H264DatagramPacketizer, H264DatagramReassembler,
-        InputPointerDatagram, MediaDatagramError, MediaDatagramHeader,
-        PointerStateDatagram, ReassemblerConfig, MEDIA_DATAGRAM_HEADER_LEN,
+        InputPointerDatagram, MediaDatagramError, MediaDatagramHeader, PointerStateDatagram,
+        ReassemblerConfig, MEDIA_DATAGRAM_HEADER_LEN,
     };
     use std::time::{Duration, Instant};
 
@@ -528,7 +555,10 @@ mod tests {
         let now = Instant::now();
         let mut completed = None;
         for datagram in datagrams {
-            completed = reassembler.push_datagram(&datagram, now).unwrap().or(completed);
+            completed = reassembler
+                .push_datagram(&datagram, now)
+                .unwrap()
+                .or(completed);
         }
 
         let completed = completed.expect("expected completed access unit");
@@ -541,7 +571,9 @@ mod tests {
     #[test]
     fn out_of_order_fragments_still_reassemble() {
         let mut packetizer = H264DatagramPacketizer::default();
-        let data = (0..3_500u32).map(|value| (value % 251) as u8).collect::<Vec<_>>();
+        let data = (0..3_500u32)
+            .map(|value| (value % 251) as u8)
+            .collect::<Vec<_>>();
         let mut datagrams = packetizer
             .packetize_bytes(&data, false, 10, 10, 700)
             .unwrap();
@@ -563,9 +595,7 @@ mod tests {
     fn expired_incomplete_access_units_are_dropped() {
         let mut packetizer = H264DatagramPacketizer::default();
         let data = vec![0x22; 3_000];
-        let datagrams = packetizer
-            .packetize_bytes(&data, false, 1, 1, 900)
-            .unwrap();
+        let datagrams = packetizer.packetize_bytes(&data, false, 1, 1, 900).unwrap();
 
         let start = Instant::now();
         let mut reassembler = H264DatagramReassembler::new(ReassemblerConfig {

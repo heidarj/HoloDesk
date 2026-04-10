@@ -18,8 +18,7 @@ pub use media::{
 };
 pub use protocol::{
     ControlMessage, ControlMessageCodec, FrameAccumulator, ProtocolError,
-    CONTROL_STREAM_CAPABILITY, DEFAULT_ALPN, POINTER_STREAM_CAPABILITY,
-    PROTOCOL_VERSION,
+    CONTROL_STREAM_CAPABILITY, DEFAULT_ALPN, POINTER_STREAM_CAPABILITY, PROTOCOL_VERSION,
 };
 pub use server::{
     ServerRuntimeSummary, SmokeClientRuntimeSummary, TransportError, TransportServer,

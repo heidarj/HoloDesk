@@ -1,14 +1,7 @@
-use std::{
-    error::Error,
-    fmt,
-    str::FromStr,
-    time::SystemTime,
-};
+use std::{error::Error, fmt, str::FromStr, time::SystemTime};
 
 #[cfg(windows)]
-use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11Texture2D,
-};
+use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 
 #[cfg(not(windows))]
 mod stub_backend;
@@ -164,10 +157,7 @@ pub enum FrameUpdateKind {
 }
 
 impl FrameUpdateKind {
-    pub fn from_flags(
-        has_image_update: bool,
-        has_pointer_update: bool,
-    ) -> Self {
+    pub fn from_flags(has_image_update: bool, has_pointer_update: bool) -> Self {
         match (has_image_update, has_pointer_update) {
             (false, false) => Self::None,
             (true, false) => Self::ImageOnly,
@@ -274,11 +264,15 @@ pub trait CaptureSession {
     fn acquire_frame(&mut self) -> Result<Option<CapturedFrame>, CaptureError>;
 
     /// Number of times the session recovered from access-lost errors.
-    fn access_lost_recoveries(&self) -> u32 { 0 }
+    fn access_lost_recoveries(&self) -> u32 {
+        0
+    }
 
     /// Check whether the underlying D3D device is still healthy.
     /// Returns `Ok(())` if the device is fine, or a descriptive error string.
-    fn check_device_health(&self) -> Result<(), String> { Ok(()) }
+    fn check_device_health(&self) -> Result<(), String> {
+        Ok(())
+    }
 
     #[cfg(windows)]
     fn d3d11_device(&self) -> ID3D11Device;
@@ -353,9 +347,7 @@ impl fmt::Display for CaptureError {
             }
             Self::NoDisplays => formatter.write_str("no attached displays found"),
             Self::Timeout => formatter.write_str("timed out waiting for a new frame"),
-            Self::AccessLost => {
-                formatter.write_str("desktop duplication access was lost")
-            }
+            Self::AccessLost => formatter.write_str("desktop duplication access was lost"),
             Self::WindowsApi {
                 operation,
                 code,
@@ -373,10 +365,7 @@ impl Error for CaptureError {}
 
 #[cfg(windows)]
 impl CaptureError {
-    pub(crate) fn from_windows(
-        operation: &'static str,
-        error: windows::core::Error,
-    ) -> Self {
+    pub(crate) fn from_windows(operation: &'static str, error: windows::core::Error) -> Self {
         Self::WindowsApi {
             operation,
             code: error.code().0,
@@ -409,11 +398,7 @@ pub(crate) fn select_display_info(
 mod tests {
     use super::*;
 
-    fn display(
-        adapter_luid: i64,
-        output_index: u32,
-        is_primary: bool,
-    ) -> DisplayInfo {
+    fn display(adapter_luid: i64, output_index: u32, is_primary: bool) -> DisplayInfo {
         DisplayInfo {
             id: DisplayId {
                 adapter_luid,
@@ -467,13 +452,22 @@ mod tests {
 
     #[test]
     fn frame_update_kind_distinguishes_pointer_and_image_updates() {
-        assert_eq!(FrameUpdateKind::from_flags(true, false), FrameUpdateKind::ImageOnly);
-        assert_eq!(FrameUpdateKind::from_flags(false, true), FrameUpdateKind::PointerOnly);
+        assert_eq!(
+            FrameUpdateKind::from_flags(true, false),
+            FrameUpdateKind::ImageOnly
+        );
+        assert_eq!(
+            FrameUpdateKind::from_flags(false, true),
+            FrameUpdateKind::PointerOnly
+        );
         assert_eq!(
             FrameUpdateKind::from_flags(true, true),
             FrameUpdateKind::ImageAndPointer
         );
-        assert_eq!(FrameUpdateKind::from_flags(false, false), FrameUpdateKind::None);
+        assert_eq!(
+            FrameUpdateKind::from_flags(false, false),
+            FrameUpdateKind::None
+        );
     }
 
     #[cfg(not(windows))]
@@ -491,8 +485,12 @@ mod tests {
         let displays = backend.enumerate_displays().unwrap();
 
         assert!(!displays.is_empty());
-        assert!(displays.iter().all(|display| !display.adapter_name.is_empty()));
-        assert!(displays.iter().all(|display| !display.output_name.is_empty()));
+        assert!(displays
+            .iter()
+            .all(|display| !display.adapter_name.is_empty()));
+        assert!(displays
+            .iter()
+            .all(|display| !display.output_name.is_empty()));
     }
 
     #[cfg(windows)]

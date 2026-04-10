@@ -53,7 +53,7 @@ use windows::{
             MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
             MFMediaType_Video, MFVideoFormat_H264, MFVideoFormat_NV12,
             MFVideoInterlace_Progressive, MFT_ENUM_FLAG_HARDWARE,
-            MFT_ENUM_FLAG_SORTANDFILTER, MFT_MESSAGE_COMMAND_DRAIN,
+            MFT_ENUM_FLAG_SORTANDFILTER, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_COMMAND_FLUSH,
             MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
             MFT_MESSAGE_NOTIFY_END_OF_STREAM,
             MFT_MESSAGE_NOTIFY_END_STREAMING,
@@ -300,6 +300,17 @@ impl VideoEncoder for MfH264Encoder {
 
 impl Drop for MfH264Encoder {
     fn drop(&mut self) {
+        // Flush pending GPU operations before shutting down — matches the
+        // abort_handle sequence.  Without the FLUSH, in-flight GPU work can
+        // interfere with a replacement encoder on the same D3D device.
+        let _ = unsafe {
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0)
+        };
+        let _ = unsafe {
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0)
+        };
         let _ = unsafe {
             self.transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0)

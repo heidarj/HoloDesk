@@ -22,7 +22,7 @@ use holobridge_input::{ButtonPhase, InputError, InputSession, KeyPhase, PointerB
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use tokio::{
     sync::{mpsc, Mutex},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
     time::{sleep, timeout},
 };
 use tracing::{debug, info, warn};
@@ -101,7 +101,11 @@ pub struct TransportSmokeClient {
 
 const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const WORKER_STALL_THRESHOLD: Duration = Duration::from_secs(3);
+const WAITING_STAGE_STALL_THRESHOLD: Duration = Duration::from_secs(8);
 static ABANDONED_VIDEO_WORKER: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TEST_VIDEO_JOIN_DELAY_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 struct ActiveVideoStream {
     stop_requested: Arc<AtomicBool>,
@@ -109,10 +113,11 @@ struct ActiveVideoStream {
     monitor_handle: JoinHandle<()>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct VideoWorkerOptions {
     pointer_enabled: bool,
     pointer_shape_sender: Option<mpsc::UnboundedSender<ControlMessage>>,
+    input_session: Option<Arc<std::sync::Mutex<InputSession>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +153,7 @@ impl VideoWorkerStage {
 struct VideoWorkerTelemetry {
     current_stage: VideoWorkerStage,
     stage_changed_at: Instant,
+    last_progress_at: Instant,
     last_successful_frame_at: Instant,
     frames_sent: u64,
     pointer_only_updates: u64,
@@ -166,6 +172,7 @@ impl VideoWorkerTelemetry {
         Self {
             current_stage: VideoWorkerStage::Starting,
             stage_changed_at: now,
+            last_progress_at: now,
             last_successful_frame_at: now,
             frames_sent: 0,
             pointer_only_updates: 0,
@@ -179,28 +186,21 @@ impl VideoWorkerTelemetry {
         }
     }
 
-    fn set_stage(
-        &mut self,
-        stage: VideoWorkerStage,
-    ) {
+    fn set_stage(&mut self, stage: VideoWorkerStage) {
         if self.current_stage != stage {
             self.current_stage = stage;
             self.stage_changed_at = Instant::now();
         }
     }
 
-    fn note_frame_dispatch(
-        &mut self,
-        plan: FrameDispatchPlan,
-        access_lost_recoveries: u32,
-    ) {
+    fn note_frame_dispatch(&mut self, plan: FrameDispatchPlan, access_lost_recoveries: u32) {
+        self.note_progress();
         self.access_lost_recoveries = access_lost_recoveries;
         if plan.send_video {
             self.frames_sent = self.frames_sent.saturating_add(1);
         }
         if plan.pointer_only {
-            self.pointer_only_updates =
-                self.pointer_only_updates.saturating_add(1);
+            self.pointer_only_updates = self.pointer_only_updates.saturating_add(1);
         }
         if plan.image_update {
             self.image_updates = self.image_updates.saturating_add(1);
@@ -215,10 +215,11 @@ impl VideoWorkerTelemetry {
         self.last_successful_frame_at = Instant::now();
     }
 
-    fn note_hresult(
-        &mut self,
-        detail: impl Into<String>,
-    ) {
+    fn note_progress(&mut self) {
+        self.last_progress_at = Instant::now();
+    }
+
+    fn note_hresult(&mut self, detail: impl Into<String>) {
         self.last_hresult = Some(detail.into());
     }
 
@@ -227,8 +228,8 @@ impl VideoWorkerTelemetry {
     }
 
     fn note_wait_timeout(&mut self) {
-        self.consecutive_wait_timeouts =
-            self.consecutive_wait_timeouts.saturating_add(1);
+        self.note_progress();
+        self.consecutive_wait_timeouts = self.consecutive_wait_timeouts.saturating_add(1);
         self.max_consecutive_wait_timeouts = self
             .max_consecutive_wait_timeouts
             .max(self.consecutive_wait_timeouts);
@@ -342,58 +343,126 @@ impl TransportServer {
         info!(endpoint = %bind_addr, alpn = %self.config.alpn, "host transport listener started");
 
         let mut handled_connections = 0usize;
+        let mut accepting_connections = true;
+        let mut connection_tasks = JoinSet::new();
         loop {
-            if let Some(max_connections) = max_connections {
-                if handled_connections >= max_connections {
-                    break;
+            if accepting_connections {
+                if let Some(max_connections) = max_connections {
+                    if handled_connections >= max_connections {
+                        accepting_connections = false;
+                    }
                 }
             }
 
-            let incoming = await_with_optional_timeout(
-                self.config.server_wait_timeout,
-                endpoint.accept(),
-                "timed out waiting for incoming connection",
-            )
-            .await?
-            .ok_or_else(|| {
-                TransportError::Runtime("endpoint closed before accepting".to_owned())
-            })?;
+            if !accepting_connections && connection_tasks.is_empty() {
+                break;
+            }
 
-            let connection = incoming.await.map_err(TransportError::Quinn)?;
-            let remote = connection.remote_address();
-            info!(remote = %remote, "host transport connection established");
+            tokio::select! {
+                Some(task_result) = connection_tasks.join_next(), if !connection_tasks.is_empty() => {
+                    if let Err(error) =
+                        unwrap_connection_task_result(task_result, "host transport connection task failed")
+                    {
+                        warn!(error = %error, "host transport connection ended with error (server continues)");
+                    }
+                }
+                incoming = await_with_optional_timeout(
+                    self.config.server_wait_timeout,
+                    endpoint.accept(),
+                    "timed out waiting for incoming connection",
+                ), if accepting_connections => {
+                    let incoming = incoming?
+                        .ok_or_else(|| {
+                            TransportError::Runtime("endpoint closed before accepting".to_owned())
+                        })?;
+                    let connection = incoming.await.map_err(TransportError::Quinn)?;
+                    let remote = connection.remote_address();
+                    info!(remote = %remote, "host transport connection established");
 
-            let (send, recv) = await_with_optional_timeout(
-                self.config.server_wait_timeout,
-                connection.accept_bi(),
-                "timed out waiting for control stream",
-            )
-            .await?
-            .map_err(TransportError::Quinn)?;
+                    let server_wait_timeout = self.config.server_wait_timeout;
+                    let server_initiated_close = self.config.server_initiated_close_after_ack;
+                    let video_config = self.config.video.clone();
+                    let auth_validator = self.auth_validator.clone();
+                    let user_store = self.user_store.clone();
+                    let resume_tokens = self.resume_tokens.clone();
+                    let session_manager = self.session_manager.clone();
 
-            info!("host transport control stream accepted");
-
-            let result = run_server_control_stream(
-                connection.clone(),
-                send,
-                recv,
-                self.config.server_initiated_close_after_ack,
-                self.config.video.clone(),
-                self.auth_validator.clone(),
-                self.user_store.clone(),
-                self.resume_tokens.clone(),
-                self.session_manager.clone(),
-            )
-            .await;
-
-            connection.close(quinn::VarInt::from_u32(0), b"done");
-            handled_connections += 1;
-            result?;
+                    connection_tasks.spawn(async move {
+                        handle_server_connection(
+                            connection,
+                            server_wait_timeout,
+                            server_initiated_close,
+                            video_config,
+                            auth_validator,
+                            user_store,
+                            resume_tokens,
+                            session_manager,
+                        )
+                        .await
+                    });
+                    handled_connections += 1;
+                }
+            }
         }
 
         endpoint.close(quinn::VarInt::from_u32(0), b"done");
+        while let Some(task_result) = connection_tasks.join_next().await {
+            if let Err(error) = unwrap_connection_task_result(
+                task_result,
+                "host transport connection task failed during shutdown",
+            ) {
+                warn!(error = %error, "host transport connection ended with error during shutdown");
+            }
+        }
         endpoint.wait_idle().await;
         Ok(())
+    }
+}
+
+async fn handle_server_connection(
+    connection: Connection,
+    server_wait_timeout: Option<Duration>,
+    server_initiated_close: bool,
+    video_config: VideoStreamConfig,
+    auth_validator: Option<Arc<TokenValidator>>,
+    user_store: Option<Arc<AuthorizedUserStore>>,
+    resume_tokens: Option<Arc<ResumeTokenService>>,
+    session_manager: Option<Arc<SessionManager>>,
+) -> Result<(), TransportError> {
+    let (send, recv) = await_with_optional_timeout(
+        server_wait_timeout,
+        connection.accept_bi(),
+        "timed out waiting for control stream",
+    )
+    .await?
+    .map_err(TransportError::Quinn)?;
+
+    info!("host transport control stream accepted");
+
+    let result = run_server_control_stream(
+        connection.clone(),
+        send,
+        recv,
+        server_initiated_close,
+        video_config,
+        auth_validator,
+        user_store,
+        resume_tokens,
+        session_manager,
+    )
+    .await;
+
+    connection.close(quinn::VarInt::from_u32(0), b"done");
+    result
+}
+
+fn unwrap_connection_task_result(
+    task_result: Result<Result<(), TransportError>, tokio::task::JoinError>,
+    context: &'static str,
+) -> Result<(), TransportError> {
+    match task_result {
+        Ok(result) => result,
+        Err(error) => Err(TransportError::Runtime(format!("{context}: {error}"))),
     }
 }
 
@@ -500,6 +569,7 @@ impl ActiveVideoStream {
         // VideoProcessorBlt.  We keep the timeout generous so the
         // DuplicateOutput retry on the next session has the best chance
         // of succeeding.
+        maybe_delay_video_worker_join().await;
         match timeout(Duration::from_secs(30), self.monitor_handle).await {
             Ok(_) => {
                 ABANDONED_VIDEO_WORKER.store(false, Ordering::Relaxed);
@@ -509,7 +579,7 @@ impl ActiveVideoStream {
                 ABANDONED_VIDEO_WORKER.store(true, Ordering::Relaxed);
                 warn!(
                     "host video: worker did not stop within 30 s — abandoning.  \
-                     The next DuplicateOutput call will retry for up to 30 s."
+                     The next stream will retry DuplicateOutput for up to 30 s while Windows unwinds the old capture path."
                 );
             }
         }
@@ -522,10 +592,9 @@ fn start_video_stream(
     options: VideoWorkerOptions,
 ) -> Result<ActiveVideoStream, TransportError> {
     if ABANDONED_VIDEO_WORKER.load(Ordering::Relaxed) {
-        return Err(TransportError::Runtime(
-            "previous video worker is still wedged; restart the host before starting another stream"
-                .to_owned(),
-        ));
+        warn!(
+            "host video: previous worker did not join cleanly; retrying capture startup and allowing DuplicateOutput to wait for the old path to unwind"
+        );
     }
     let initial_payload_limit = negotiated_datagram_payload_limit(
         connection.max_datagram_size(),
@@ -567,10 +636,8 @@ fn start_video_stream(
             Ok(Err(error)) => {
                 if !stop_for_monitor.load(Ordering::Relaxed) {
                     warn!(error = %error, "host video stream worker failed — closing connection");
-                    connection_for_monitor.close(
-                        quinn::VarInt::from_u32(1),
-                        b"video-stream-worker-failed",
-                    );
+                    connection_for_monitor
+                        .close(quinn::VarInt::from_u32(1), b"video-stream-worker-failed");
                 } else {
                     info!(error = %error, "host video stream worker ended after stop");
                 }
@@ -578,10 +645,8 @@ fn start_video_stream(
             Err(error) => {
                 if !stop_for_monitor.load(Ordering::Relaxed) {
                     warn!(error = %error, "host video stream worker panicked — closing connection");
-                    connection_for_monitor.close(
-                        quinn::VarInt::from_u32(1),
-                        b"video-stream-worker-panicked",
-                    );
+                    connection_for_monitor
+                        .close(quinn::VarInt::from_u32(1), b"video-stream-worker-panicked");
                 }
             }
         }
@@ -623,15 +688,11 @@ fn run_video_stream_worker(
     let result = (|| {
         let backend = DxgiCaptureBackend::new().map_err(TransportError::Capture)?;
         let capture_target = match video_config.display_id.as_deref() {
-            Some(display_id) => CaptureTarget::Display(
-                display_id
-                    .parse::<DisplayId>()
-                    .map_err(|error| {
-                        TransportError::Runtime(format!(
-                            "invalid video display id: {error}"
-                        ))
-                    })?,
-            ),
+            Some(display_id) => {
+                CaptureTarget::Display(display_id.parse::<DisplayId>().map_err(|error| {
+                    TransportError::Runtime(format!("invalid video display id: {error}"))
+                })?)
+            }
             None => CaptureTarget::Primary,
         };
         let mut capture = backend
@@ -643,11 +704,13 @@ fn run_video_stream_worker(
                 },
             )
             .map_err(TransportError::Capture)?;
-
-        set_video_worker_stage(
-            &telemetry,
-            VideoWorkerStage::WaitingForFirstFrame,
+        sync_input_session_bounds(
+            &options.input_session,
+            capture.display_info().desktop_bounds,
+            "capture-startup",
         );
+
+        set_video_worker_stage(&telemetry, VideoWorkerStage::WaitingForFirstFrame);
         let first_frame = wait_for_first_frame(
             capture.as_mut(),
             Duration::from_secs(video_config.first_frame_timeout_secs),
@@ -655,28 +718,9 @@ fn run_video_stream_worker(
             &telemetry,
         )?;
         let metadata = first_frame.metadata();
-        let bitrate_bps = video_config.bitrate_bps.unwrap_or_else(|| {
-            recommended_bitrate_bps(
-                metadata.width,
-                metadata.height,
-                video_config.frame_rate_num,
-                video_config.frame_rate_den,
-            )
-        });
-        let encoder_config = VideoEncoderConfig::new(
-            metadata.width,
-            metadata.height,
-            bitrate_bps,
-            video_config.frame_rate_num,
-            video_config.frame_rate_den,
-        );
-
-        #[cfg(windows)]
-        let mut encoder = MfH264Encoder::new(&capture.d3d11_device(), encoder_config)
-            .map_err(TransportError::Encode)?;
-        #[cfg(not(windows))]
-        let mut encoder =
-            MfH264Encoder::new(encoder_config).map_err(TransportError::Encode)?;
+        let mut encoder_config =
+            build_encoder_config(&video_config, metadata.width, metadata.height);
+        let mut encoder = create_video_encoder(capture.as_ref(), encoder_config.clone())?;
 
         // Publish the abort handle so the watchdog can flush the MFT from
         // outside the worker if it gets stuck in a GPU/MFT call.
@@ -706,15 +750,18 @@ fn run_video_stream_worker(
                 Ok(Some(frame)) => frame,
                 Ok(None) => {
                     let consecutive_wait_timeouts = note_video_wait_timeout(&telemetry);
-                    if consecutive_wait_timeouts == 1
-                        || consecutive_wait_timeouts % 120 == 0
-                    {
+                    if consecutive_wait_timeouts == 1 || consecutive_wait_timeouts % 120 == 0 {
                         trace_video(format!(
                             "AcquireNextFrame timeout consecutive_wait_timeouts={consecutive_wait_timeouts}"
                         ));
                     }
                     let recoveries = capture.access_lost_recoveries();
                     if recoveries != last_recoveries {
+                        sync_input_session_bounds(
+                            &options.input_session,
+                            capture.display_info().desktop_bounds,
+                            "capture-recovery",
+                        );
                         info!(
                             recoveries,
                             "host video: DXGI access-lost recovered, waiting for frames"
@@ -732,13 +779,44 @@ fn run_video_stream_worker(
 
             let recoveries = capture.access_lost_recoveries();
             if recoveries != last_recoveries {
+                sync_input_session_bounds(
+                    &options.input_session,
+                    capture.display_info().desktop_bounds,
+                    "capture-recovery",
+                );
                 let frames_sent = current_video_frames_sent(&telemetry);
                 info!(
                     recoveries,
-                    frames_sent,
-                    "host video: resumed after access-lost recovery"
+                    frames_sent, "host video: resumed after access-lost recovery"
                 );
                 last_recoveries = recoveries;
+            }
+
+            if frame_requires_encoder_rebuild(&frame, &encoder_config) {
+                let metadata = frame.metadata();
+                let new_config =
+                    build_encoder_config(&video_config, metadata.width, metadata.height);
+                set_video_worker_stage(&telemetry, VideoWorkerStage::EncodingFrame);
+                warn!(
+                    old_width = encoder_config.width,
+                    old_height = encoder_config.height,
+                    new_width = new_config.width,
+                    new_height = new_config.height,
+                    frames_sent = current_video_frames_sent(&telemetry),
+                    access_lost_recoveries = recoveries,
+                    "host video: capture dimensions changed; recreating encoder"
+                );
+                // Flush the old encoder's pending GPU work before creating the
+                // replacement on the same D3D device.  Without this the old
+                // MFT can leave in-flight GPU operations that conflict with
+                // the new encoder, causing ProcessInput/ProcessOutput to hang.
+                if let Some(handle) = abort_slot.lock().unwrap().clone() {
+                    handle.abort();
+                }
+                let new_encoder = create_video_encoder(capture.as_ref(), new_config.clone())?;
+                *abort_slot.lock().unwrap() = new_encoder.abort_handle();
+                encoder = new_encoder;
+                encoder_config = new_config;
             }
 
             send_frame_update(
@@ -777,6 +855,7 @@ fn run_video_stream_worker(
     if let Some(handle) = watchdog_handle {
         let _ = handle.join();
     }
+    *abort_slot.lock().unwrap() = None;
 
     result
 }
@@ -870,7 +949,7 @@ fn send_encoded_access_units(
                 }
                 Err(quinn::SendDatagramError::ConnectionLost(error)) => {
                     warn!(error = %error, "video datagram send: connection lost");
-                    return Err(TransportError::Quinn(error))
+                    return Err(TransportError::Quinn(error));
                 }
             }
         }
@@ -892,15 +971,20 @@ fn wait_for_first_frame(
                 "video stream startup was cancelled".to_owned(),
             ));
         }
-        if let Some(frame) = capture.acquire_frame().map_err(TransportError::Capture)? {
-            if frame.metadata().update_kind.has_image_update() {
+        match capture.acquire_frame().map_err(TransportError::Capture)? {
+            Some(frame) if frame.metadata().update_kind.has_image_update() => {
                 return Ok(frame);
             }
-            trace_video("skipping pointer-only update while waiting for first image frame");
-            set_video_worker_telemetry(telemetry, |state| {
-                state.pointer_only_updates =
-                    state.pointer_only_updates.saturating_add(1);
-            });
+            Some(_) => {
+                trace_video("skipping pointer-only update while waiting for first image frame");
+                set_video_worker_telemetry(telemetry, |state| {
+                    state.pointer_only_updates = state.pointer_only_updates.saturating_add(1);
+                    state.note_progress();
+                });
+            }
+            None => {
+                note_video_wait_timeout(telemetry);
+            }
         }
     }
 
@@ -934,11 +1018,9 @@ fn send_frame_update(
     if plan.send_pointer_state {
         let pointer_update = pointer_update.expect("pointer update");
         set_video_worker_stage(telemetry, VideoWorkerStage::SendingPointerState);
-        if let Err(error) = send_pointer_state_datagram(
-            connection,
-            *pointer_sequence,
-            pointer_update,
-        ) {
+        if let Err(error) =
+            send_pointer_state_datagram(connection, *pointer_sequence, pointer_update)
+        {
             set_video_worker_hresult(telemetry, error.to_string());
             warn!(error = %error, "host video: pointer state send error");
             return Err(error);
@@ -954,12 +1036,8 @@ fn send_frame_update(
 
         if plan.send_pointer_shape {
             if let Some(shape) = pointer_update.shape.as_ref() {
-                set_video_worker_stage(
-                    telemetry,
-                    VideoWorkerStage::SendingPointerShape,
-                );
-                if let Err(error) =
-                    queue_pointer_shape_update(&options.pointer_shape_sender, shape)
+                set_video_worker_stage(telemetry, VideoWorkerStage::SendingPointerShape);
+                if let Err(error) = queue_pointer_shape_update(&options.pointer_shape_sender, shape)
                 {
                     set_video_worker_hresult(telemetry, error.to_string());
                     warn!(error = %error, "host video: pointer shape send error");
@@ -1014,12 +1092,9 @@ fn send_frame_update(
     }
 
     set_video_worker_stage(telemetry, VideoWorkerStage::SendingVideo);
-    if let Err(error) = send_encoded_access_units(
-        connection,
-        video_config,
-        packetizer,
-        access_units,
-    ) {
+    if let Err(error) =
+        send_encoded_access_units(connection, video_config, packetizer, access_units)
+    {
         set_video_worker_hresult(telemetry, error.to_string());
         warn!(
             error = %error,
@@ -1051,20 +1126,16 @@ fn send_pointer_state_datagram(
 
     match connection.send_datagram(datagram.to_vec().into()) {
         Ok(()) => Ok(()),
-        Err(quinn::SendDatagramError::UnsupportedByPeer) => Err(
-            TransportError::Runtime(
-                "peer did not negotiate pointer datagram support".to_owned(),
-            ),
-        ),
+        Err(quinn::SendDatagramError::UnsupportedByPeer) => Err(TransportError::Runtime(
+            "peer did not negotiate pointer datagram support".to_owned(),
+        )),
         Err(quinn::SendDatagramError::Disabled) => Err(TransportError::Runtime(
             "QUIC datagram support is disabled locally".to_owned(),
         )),
         Err(quinn::SendDatagramError::TooLarge) => Err(TransportError::Runtime(
             "pointer datagram exceeded the negotiated QUIC payload size".to_owned(),
         )),
-        Err(quinn::SendDatagramError::ConnectionLost(error)) => {
-            Err(TransportError::Quinn(error))
-        }
+        Err(quinn::SendDatagramError::ConnectionLost(error)) => Err(TransportError::Quinn(error)),
     }
 }
 
@@ -1089,9 +1160,7 @@ fn queue_pointer_shape_update(
         })?
         .send(message)
         .map_err(|_| {
-            TransportError::Runtime(
-                "pointer shape control sender closed unexpectedly".to_owned(),
-            )
+            TransportError::Runtime("pointer shape control sender closed unexpectedly".to_owned())
         })
 }
 
@@ -1113,6 +1182,7 @@ fn spawn_video_worker_watchdog(
                 let (
                     current_stage,
                     stage_changed_at,
+                    last_progress_at,
                     last_successful_frame_at,
                     frames_sent,
                     pointer_only_updates,
@@ -1128,6 +1198,7 @@ fn spawn_video_worker_watchdog(
                     (
                         state.current_stage,
                         state.stage_changed_at,
+                        state.last_progress_at,
                         state.last_successful_frame_at,
                         state.frames_sent,
                         state.pointer_only_updates,
@@ -1142,13 +1213,14 @@ fn spawn_video_worker_watchdog(
                 };
 
                 let stage_elapsed = stage_changed_at.elapsed();
-                let since_last_frame_ms =
-                    last_successful_frame_at.elapsed().as_millis() as u64;
+                let since_last_progress_ms = last_progress_at.elapsed().as_millis() as u64;
+                let since_last_frame_ms = last_successful_frame_at.elapsed().as_millis() as u64;
 
                 if last_heartbeat_log.elapsed() >= Duration::from_secs(2) {
                     info!(
                         current_stage = current_stage.as_str(),
                         stage_elapsed_ms = stage_elapsed.as_millis() as u64,
+                        since_last_progress_ms,
                         since_last_frame_ms,
                         frames_sent,
                         pointer_only_updates,
@@ -1163,22 +1235,16 @@ fn spawn_video_worker_watchdog(
                     last_heartbeat_log = Instant::now();
                 }
 
-                let stage_is_blocking = matches!(
+                if let Some(stall_reason) = video_worker_stall_reason(
                     current_stage,
-                    VideoWorkerStage::SendingPointerState
-                        | VideoWorkerStage::SendingPointerShape
-                        | VideoWorkerStage::CheckingDevice
-                        | VideoWorkerStage::EncodingFrame
-                        | VideoWorkerStage::SendingVideo
-                );
-                if !stall_action_taken
-                    && stage_is_blocking
-                    && stage_elapsed >= WORKER_STALL_THRESHOLD
-                {
+                    stage_elapsed,
+                    Duration::from_millis(since_last_progress_ms),
+                    stall_action_taken,
+                ) {
                     set_video_worker_telemetry(&telemetry, |state| {
                         state.stall_action_taken = true;
                         state.note_hresult(format!(
-                            "worker stalled in {} for {} ms",
+                            "worker stalled in {} for {} ms ({stall_reason})",
                             current_stage.as_str(),
                             stage_elapsed.as_millis()
                         ));
@@ -1186,12 +1252,14 @@ fn spawn_video_worker_watchdog(
                     warn!(
                         current_stage = current_stage.as_str(),
                         stage_elapsed_ms = stage_elapsed.as_millis() as u64,
+                        since_last_progress_ms,
                         since_last_frame_ms,
                         frames_sent,
                         pointer_only_updates,
                         image_updates,
                         access_lost_recoveries,
                         last_hresult = last_hresult.as_deref().unwrap_or("none"),
+                        stall_reason,
                         "host video: worker stalled; closing active stream"
                     );
                     stop_requested.store(true, Ordering::Relaxed);
@@ -1202,10 +1270,7 @@ fn spawn_video_worker_watchdog(
                                 handle.abort();
                             });
                     }
-                    connection.close(
-                        quinn::VarInt::from_u32(1),
-                        b"video-worker-stalled",
-                    );
+                    connection.close(quinn::VarInt::from_u32(1), b"video-worker-stalled");
                 }
             }
         })
@@ -1218,6 +1283,123 @@ fn set_video_worker_stage(
 ) {
     set_video_worker_telemetry(telemetry, |state| state.set_stage(stage));
     trace_video(format!("stage -> {}", stage.as_str()));
+}
+
+fn build_encoder_config(
+    video_config: &VideoStreamConfig,
+    width: u32,
+    height: u32,
+) -> VideoEncoderConfig {
+    let bitrate_bps = video_config.bitrate_bps.unwrap_or_else(|| {
+        recommended_bitrate_bps(
+            width,
+            height,
+            video_config.frame_rate_num,
+            video_config.frame_rate_den,
+        )
+    });
+    VideoEncoderConfig::new(
+        width,
+        height,
+        bitrate_bps,
+        video_config.frame_rate_num,
+        video_config.frame_rate_den,
+    )
+}
+
+fn sync_input_session_bounds(
+    input_session: &Option<Arc<std::sync::Mutex<InputSession>>>,
+    display_bounds: DesktopBounds,
+    reason: &'static str,
+) {
+    let Some(input_session) = input_session else {
+        return;
+    };
+
+    let mut input_session = input_session.lock().unwrap();
+    let previous_bounds = input_session.display_bounds();
+    if input_session.update_display_bounds(display_bounds) {
+        info!(
+            reason,
+            old_width = previous_bounds.width(),
+            old_height = previous_bounds.height(),
+            new_width = display_bounds.width(),
+            new_height = display_bounds.height(),
+            "input replay: updated display bounds"
+        );
+    }
+}
+
+#[cfg(windows)]
+fn create_video_encoder(
+    capture: &dyn CaptureSession,
+    config: VideoEncoderConfig,
+) -> Result<MfH264Encoder, TransportError> {
+    MfH264Encoder::new(&capture.d3d11_device(), config).map_err(TransportError::Encode)
+}
+
+#[cfg(not(windows))]
+fn create_video_encoder(
+    _capture: &dyn CaptureSession,
+    config: VideoEncoderConfig,
+) -> Result<MfH264Encoder, TransportError> {
+    MfH264Encoder::new(config).map_err(TransportError::Encode)
+}
+
+fn frame_requires_encoder_rebuild(
+    frame: &holobridge_capture::CapturedFrame,
+    config: &VideoEncoderConfig,
+) -> bool {
+    let metadata = frame.metadata();
+    metadata.update_kind.has_image_update()
+        && (metadata.width != config.width || metadata.height != config.height)
+}
+
+fn is_video_worker_blocking_stage(stage: VideoWorkerStage) -> bool {
+    matches!(
+        stage,
+        VideoWorkerStage::SendingPointerState
+            | VideoWorkerStage::SendingPointerShape
+            | VideoWorkerStage::CheckingDevice
+            | VideoWorkerStage::EncodingFrame
+            | VideoWorkerStage::SendingVideo
+    )
+}
+
+fn video_worker_stall_reason(
+    stage: VideoWorkerStage,
+    stage_elapsed: Duration,
+    since_last_progress: Duration,
+    stall_action_taken: bool,
+) -> Option<&'static str> {
+    if stall_action_taken {
+        return None;
+    }
+
+    if is_video_worker_blocking_stage(stage) && stage_elapsed >= WORKER_STALL_THRESHOLD {
+        return Some("blocking-stage-timeout");
+    }
+
+    if matches!(
+        stage,
+        VideoWorkerStage::WaitingForFirstFrame | VideoWorkerStage::WaitingForFrame
+    ) && since_last_progress >= WAITING_STAGE_STALL_THRESHOLD
+    {
+        return Some("capture-wait-timeout");
+    }
+
+    None
+}
+
+#[cfg(not(test))]
+async fn maybe_delay_video_worker_join() {}
+
+#[cfg(test)]
+async fn maybe_delay_video_worker_join() {
+    let delay_ms = TEST_VIDEO_JOIN_DELAY_MS.load(Ordering::Relaxed);
+    if delay_ms > 0 {
+        sleep(Duration::from_millis(delay_ms)).await;
+    }
 }
 
 fn set_video_worker_hresult(
@@ -1237,21 +1419,15 @@ fn set_video_worker_telemetry(
     update(&mut state);
 }
 
-fn current_video_frames_sent(
-    telemetry: &Arc<std::sync::Mutex<VideoWorkerTelemetry>>,
-) -> u64 {
+fn current_video_frames_sent(telemetry: &Arc<std::sync::Mutex<VideoWorkerTelemetry>>) -> u64 {
     telemetry.lock().unwrap().frames_sent
 }
 
-fn current_pointer_only_updates(
-    telemetry: &Arc<std::sync::Mutex<VideoWorkerTelemetry>>,
-) -> u64 {
+fn current_pointer_only_updates(telemetry: &Arc<std::sync::Mutex<VideoWorkerTelemetry>>) -> u64 {
     telemetry.lock().unwrap().pointer_only_updates
 }
 
-fn note_video_wait_timeout(
-    telemetry: &Arc<std::sync::Mutex<VideoWorkerTelemetry>>,
-) -> u64 {
+fn note_video_wait_timeout(telemetry: &Arc<std::sync::Mutex<VideoWorkerTelemetry>>) -> u64 {
     let mut state = telemetry.lock().unwrap();
     state.note_wait_timeout();
     state.consecutive_wait_timeouts
@@ -1284,9 +1460,7 @@ async fn run_server_control_stream(
                 kind = message.kind(),
                 "host transport sending control message"
             );
-            if let Err(error) =
-                send_message_locked(&pointer_shape_send, &message).await
-            {
+            if let Err(error) = send_message_locked(&pointer_shape_send, &message).await {
                 warn!(
                     error = %error,
                     "host video: pointer shape control send failed"
@@ -1373,14 +1547,10 @@ async fn run_server_control_stream(
                                 );
                                 send_message_locked(&send, &result).await?;
                                 if video_config.enabled
-                                    && client_supports_video_stream(
-                                        &client_capabilities,
-                                    )
+                                    && client_supports_video_stream(&client_capabilities)
                                 {
                                     let pointer_enabled =
-                                        client_supports_pointer_stream(
-                                            &client_capabilities,
-                                        );
+                                        client_supports_pointer_stream(&client_capabilities);
                                     video_stream = Some(start_video_stream(
                                         connection.clone(),
                                         video_config.clone(),
@@ -1388,6 +1558,7 @@ async fn run_server_control_stream(
                                             pointer_enabled,
                                             pointer_shape_sender: pointer_enabled
                                                 .then(|| pointer_shape_sender.clone()),
+                                            input_session: input_session.clone(),
                                         },
                                     )?);
                                 }
@@ -1457,14 +1628,10 @@ async fn run_server_control_stream(
                                 );
                                 send_message_locked(&send, &result).await?;
                                 if video_config.enabled
-                                    && client_supports_video_stream(
-                                        &client_capabilities,
-                                    )
+                                    && client_supports_video_stream(&client_capabilities)
                                 {
                                     let pointer_enabled =
-                                        client_supports_pointer_stream(
-                                            &client_capabilities,
-                                        );
+                                        client_supports_pointer_stream(&client_capabilities);
                                     video_stream = Some(start_video_stream(
                                         connection.clone(),
                                         video_config.clone(),
@@ -1472,6 +1639,7 @@ async fn run_server_control_stream(
                                             pointer_enabled,
                                             pointer_shape_sender: pointer_enabled
                                                 .then(|| pointer_shape_sender.clone()),
+                                            input_session: input_session.clone(),
                                         },
                                     )?);
                                 }
@@ -1529,10 +1697,8 @@ async fn run_server_control_stream(
         session_established = true;
         input_session = build_input_session(&video_config);
         if client_supports_input_pointer_datagrams(&client_capabilities) {
-            input_datagram_task = spawn_input_datagram_task(
-                connection.clone(),
-                input_session.clone(),
-            );
+            input_datagram_task =
+                spawn_input_datagram_task(connection.clone(), input_session.clone());
         }
         if video_config.enabled && client_supports_video_stream(&client_capabilities) {
             let pointer_enabled = client_supports_pointer_stream(&client_capabilities);
@@ -1541,8 +1707,8 @@ async fn run_server_control_stream(
                 video_config.clone(),
                 VideoWorkerOptions {
                     pointer_enabled,
-                    pointer_shape_sender: pointer_enabled
-                        .then(|| pointer_shape_sender.clone()),
+                    pointer_shape_sender: pointer_enabled.then(|| pointer_shape_sender.clone()),
+                    input_session: input_session.clone(),
                 },
             )?);
         }
@@ -1630,8 +1796,7 @@ async fn run_server_control_stream(
         video_stream.stop();
         info!(
             orderly_shutdown = protocol.orderly_shutdown_complete(),
-            unexpected_disconnect,
-            "host video: stopping video worker before releasing connection"
+            unexpected_disconnect, "host video: stopping video worker before releasing connection"
         );
         video_stream.join().await;
     }
@@ -1726,16 +1891,12 @@ fn handle_input_control_message(
         ControlMessage::KeyboardKey {
             key_code, phase, ..
         } => match KeyPhase::parse(phase) {
-            Ok(phase) => input_session
-                .lock()
-                .unwrap()
-                .handle_key(*key_code, phase),
+            Ok(phase) => input_session.lock().unwrap().handle_key(*key_code, phase),
             Err(error) => Err(error),
         },
-        ControlMessage::InputFocus { active } => input_session
-            .lock()
-            .unwrap()
-            .set_input_focus(*active),
+        ControlMessage::InputFocus { active } => {
+            input_session.lock().unwrap().set_input_focus(*active)
+        }
         _ => Ok(()),
     };
 
@@ -2003,7 +2164,10 @@ fn default_input_display_bounds() -> DesktopBounds {
 }
 
 fn resolve_input_display_bounds(video_config: &VideoStreamConfig) -> DesktopBounds {
-    if !matches!(video_config.source, crate::config::VideoSource::DesktopCapture) {
+    if !matches!(
+        video_config.source,
+        crate::config::VideoSource::DesktopCapture
+    ) {
         return default_input_display_bounds();
     }
 
@@ -2040,7 +2204,9 @@ fn resolve_input_display_bounds(video_config: &VideoStreamConfig) -> DesktopBoun
         .unwrap_or_else(default_input_display_bounds)
 }
 
-fn build_input_session(video_config: &VideoStreamConfig) -> Option<Arc<std::sync::Mutex<InputSession>>> {
+fn build_input_session(
+    video_config: &VideoStreamConfig,
+) -> Option<Arc<std::sync::Mutex<InputSession>>> {
     let display_bounds = resolve_input_display_bounds(video_config);
     match InputSession::new(display_bounds) {
         Ok(session) => Some(Arc::new(std::sync::Mutex::new(session))),
@@ -2146,6 +2312,21 @@ mod tests {
         Resume(&'a str),
     }
 
+    struct VideoJoinDelayGuard;
+
+    impl VideoJoinDelayGuard {
+        fn new(delay_ms: u64) -> Self {
+            TEST_VIDEO_JOIN_DELAY_MS.store(delay_ms, Ordering::Relaxed);
+            Self
+        }
+    }
+
+    impl Drop for VideoJoinDelayGuard {
+        fn drop(&mut self) {
+            TEST_VIDEO_JOIN_DELAY_MS.store(0, Ordering::Relaxed);
+        }
+    }
+
     #[test]
     fn pointer_only_updates_bypass_video_when_client_supports_overlay() {
         let plan = plan_frame_dispatch(FrameUpdateKind::PointerOnly, true, true);
@@ -2173,6 +2354,54 @@ mod tests {
         assert!(capabilities.contains(&POINTER_DATAGRAM_CAPABILITY.to_owned()));
         assert!(capabilities.contains(&POINTER_STREAM_CAPABILITY.to_owned()));
         assert!(capabilities.contains(&INPUT_POINTER_DATAGRAM_CAPABILITY.to_owned()));
+    }
+
+    #[test]
+    fn blocking_stage_stalls_quickly() {
+        assert_eq!(
+            video_worker_stall_reason(
+                VideoWorkerStage::EncodingFrame,
+                Duration::from_secs(4),
+                Duration::from_millis(200),
+                false,
+            ),
+            Some("blocking-stage-timeout")
+        );
+    }
+
+    #[test]
+    fn waiting_stage_requires_missing_progress() {
+        assert_eq!(
+            video_worker_stall_reason(
+                VideoWorkerStage::WaitingForFrame,
+                Duration::from_secs(30),
+                Duration::from_secs(2),
+                false,
+            ),
+            None
+        );
+        assert_eq!(
+            video_worker_stall_reason(
+                VideoWorkerStage::WaitingForFrame,
+                Duration::from_secs(30),
+                Duration::from_secs(9),
+                false,
+            ),
+            Some("capture-wait-timeout")
+        );
+    }
+
+    #[test]
+    fn stall_reason_is_suppressed_after_action_taken() {
+        assert_eq!(
+            video_worker_stall_reason(
+                VideoWorkerStage::EncodingFrame,
+                Duration::from_secs(10),
+                Duration::from_secs(10),
+                true,
+            ),
+            None
+        );
     }
 
     fn free_port() -> u16 {
@@ -2320,7 +2549,10 @@ mod tests {
             })
         }
 
-        async fn exchange_hello(&mut self, request_video_stream: bool) -> Result<(), TransportError> {
+        async fn exchange_hello(
+            &mut self,
+            request_video_stream: bool,
+        ) -> Result<(), TransportError> {
             send_message(&mut self.send, &hello_message(request_video_stream)).await?;
             let hello_messages = read_messages(&mut self.recv, &mut self.accumulator).await?;
             assert!(hello_messages
@@ -2329,7 +2561,10 @@ mod tests {
             Ok(())
         }
 
-        async fn authenticate(&mut self, identity_token: &str) -> Result<ControlMessage, TransportError> {
+        async fn authenticate(
+            &mut self,
+            identity_token: &str,
+        ) -> Result<ControlMessage, TransportError> {
             send_message(
                 &mut self.send,
                 &ControlMessage::authenticate(identity_token),
@@ -2361,7 +2596,12 @@ mod tests {
             y: i32,
         ) -> Result<(), TransportError> {
             self.connection
-                .send_datagram(InputPointerDatagram { sequence, x, y }.encode().to_vec().into())
+                .send_datagram(
+                    InputPointerDatagram { sequence, x, y }
+                        .encode()
+                        .to_vec()
+                        .into(),
+                )
                 .map_err(|error| {
                     TransportError::Runtime(format!(
                         "failed to send input pointer datagram during loopback test: {error}"
@@ -2682,7 +2922,10 @@ mod tests {
         }
 
         let mut reassembler = H264DatagramReassembler::new(ReassemblerConfig::default());
-        let access_unit = client.read_media_access_unit(&mut reassembler).await.unwrap();
+        let access_unit = client
+            .read_media_access_unit(&mut reassembler)
+            .await
+            .unwrap();
         assert_eq!(access_unit.access_unit_id, 1);
         assert_eq!(access_unit.data, test_video_payload());
         assert!(access_unit.is_keyframe);
@@ -2732,9 +2975,7 @@ mod tests {
             .await
             .unwrap();
         client
-            .send_control_message(&ControlMessage::pointer_button(
-                "left", "down", 100, 200, 2,
-            ))
+            .send_control_message(&ControlMessage::pointer_button("left", "down", 100, 200, 2))
             .await
             .unwrap();
         client
@@ -2833,6 +3074,130 @@ mod tests {
         assert!(resumed_access_unit.is_keyframe);
 
         resumed_client.close_gracefully().await.unwrap();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn loopback_resume_can_connect_while_previous_stream_tears_down() {
+        let _join_delay = VideoJoinDelayGuard::new(2_000);
+
+        let (private_pem, public_pem) = generate_test_rsa_keypair();
+        let tmp = TempDir::new().unwrap();
+        let pub_key_path = tmp.path().join("pub.pem");
+        std::fs::write(&pub_key_path, &public_pem).unwrap();
+
+        let port = free_port();
+        let auth_config = test_auth_config(&tmp, pub_key_path.to_str().unwrap(), 60);
+        let server = TransportServer::with_auth(test_video_server_config(port), &auth_config)
+            .await
+            .unwrap();
+
+        let server_task = tokio::spawn(async move { server.serve_n(2).await });
+        sleep(Duration::from_millis(100)).await;
+
+        let identity_token = create_test_jwt(
+            &private_pem,
+            "video-user-3",
+            &auth_config.apple_bundle_id,
+            false,
+        );
+        let mut client_config = test_client_config(port);
+        client_config.request_video_stream = true;
+
+        let mut initial_client = ConnectedClient::connect(&client_config).await.unwrap();
+        initial_client.exchange_hello(true).await.unwrap();
+        let auth_result = initial_client.authenticate(&identity_token).await.unwrap();
+        let resume_token = match auth_result {
+            ControlMessage::AuthResult {
+                success,
+                resume_token,
+                ..
+            } => {
+                assert!(success);
+                resume_token.unwrap()
+            }
+            other => panic!("unexpected message: {:?}", other),
+        };
+
+        let mut first_reassembler = H264DatagramReassembler::new(ReassemblerConfig::default());
+        let initial_access_unit = initial_client
+            .read_media_access_unit(&mut first_reassembler)
+            .await
+            .unwrap();
+        assert_eq!(initial_access_unit.access_unit_id, 1);
+
+        initial_client.close_abrupt().await;
+
+        let reconnect_started_at = Instant::now();
+        let mut resumed_client = ConnectedClient::connect(&client_config).await.unwrap();
+        resumed_client.exchange_hello(true).await.unwrap();
+        let resume_result = resumed_client.resume(&resume_token).await.unwrap();
+        let reconnect_elapsed = reconnect_started_at.elapsed();
+
+        match resume_result {
+            ControlMessage::ResumeResult { success, .. } => assert!(success),
+            other => panic!("unexpected message: {:?}", other),
+        }
+        assert!(
+            reconnect_elapsed < Duration::from_millis(1_500),
+            "resume took {:?} even though accept should stay live during teardown",
+            reconnect_elapsed
+        );
+
+        let mut resumed_reassembler = H264DatagramReassembler::new(ReassemblerConfig::default());
+        let resumed_access_unit = resumed_client
+            .read_media_access_unit(&mut resumed_reassembler)
+            .await
+            .unwrap();
+        assert_eq!(resumed_access_unit.access_unit_id, 1);
+
+        resumed_client.close_gracefully().await.unwrap();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn loopback_noauth_reconnect_can_start_while_previous_stream_tears_down() {
+        let _join_delay = VideoJoinDelayGuard::new(2_000);
+
+        let port = free_port();
+        let server = TransportServer::new(test_video_server_config(port));
+        let server_task = tokio::spawn(async move { server.serve_n(2).await });
+        sleep(Duration::from_millis(100)).await;
+
+        let mut client_config = test_client_config(port);
+        client_config.request_video_stream = true;
+
+        let mut initial_client = ConnectedClient::connect(&client_config).await.unwrap();
+        initial_client.exchange_hello(true).await.unwrap();
+
+        let mut first_reassembler = H264DatagramReassembler::new(ReassemblerConfig::default());
+        let initial_access_unit = initial_client
+            .read_media_access_unit(&mut first_reassembler)
+            .await
+            .unwrap();
+        assert_eq!(initial_access_unit.access_unit_id, 1);
+
+        initial_client.close_abrupt().await;
+
+        let reconnect_started_at = Instant::now();
+        let mut reconnected_client = ConnectedClient::connect(&client_config).await.unwrap();
+        reconnected_client.exchange_hello(true).await.unwrap();
+        let reconnect_elapsed = reconnect_started_at.elapsed();
+
+        assert!(
+            reconnect_elapsed < Duration::from_millis(1_500),
+            "no-auth reconnect took {:?} even though accept should stay live during teardown",
+            reconnect_elapsed
+        );
+
+        let mut resumed_reassembler = H264DatagramReassembler::new(ReassemblerConfig::default());
+        let resumed_access_unit = reconnected_client
+            .read_media_access_unit(&mut resumed_reassembler)
+            .await
+            .unwrap();
+        assert_eq!(resumed_access_unit.access_unit_id, 1);
+
+        reconnected_client.close_gracefully().await.unwrap();
         server_task.await.unwrap().unwrap();
     }
 }
