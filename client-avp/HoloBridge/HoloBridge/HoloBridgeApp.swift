@@ -14,5 +14,12 @@ struct HoloBridgeApp: App {
             StreamSessionView()
                 .environment(session)
         }
+
+        WindowGroup(id: "stream-volume") {
+            StreamVolumeView()
+                .environment(session)
+        }
+        .windowStyle(.volumetric)
+        .defaultSize(width: 1.85, height: 1.1, depth: 1.2, in: .meters)
     }
 }

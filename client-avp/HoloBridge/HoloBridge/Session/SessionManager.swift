@@ -2,6 +2,49 @@ import Foundation
 import HoloBridgeClientCore
 import os
 
+public enum StreamPresentationMode: String, CaseIterable, Equatable, Hashable, Identifiable, Sendable {
+    case window
+    case volume
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .window:
+            return "Window"
+        case .volume:
+            return "Volume"
+        }
+    }
+
+    public var connectLabel: String {
+        switch self {
+        case .window:
+            return "Connect Window"
+        case .volume:
+            return "Connect Volume"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .window:
+            return "rectangle.inset.filled.and.person.filled"
+        case .volume:
+            return "cube.transparent"
+        }
+    }
+
+    public var utilityDescription: String {
+        switch self {
+        case .window:
+            return "The desktop stream is running in its own SwiftUI window. This utility window stays available for reconnect, diagnostics, and disconnect."
+        case .volume:
+            return "The desktop stream is running on a RealityKit-rendered curved display inside a volumetric scene. This utility window stays available for reconnect, diagnostics, and disconnect."
+        }
+    }
+}
+
 public enum AuthMode: String, CaseIterable, Equatable, Hashable, Identifiable, Sendable {
     case apple
     case test
@@ -42,28 +85,34 @@ public final class SessionManager {
     public var authMode: AuthMode
     public let videoRenderer: VideoRenderer
     public private(set) var state: SessionState = .disconnected
+    public private(set) var activePresentationMode: StreamPresentationMode = .window
     public private(set) var streamWindowRequested = false
+    public private(set) var streamVolumeRequested = false
     public private(set) var remoteInputSuppressed = false
 
     @ObservationIgnored private let logger = Logger(subsystem: "HoloBridge", category: "Session")
     @ObservationIgnored private let videoPipeline: VideoStreamPipeline
     @ObservationIgnored private var sessionClient: SessionClient! = nil
     @ObservationIgnored private var connectTask: Task<Void, Never>?
-    @ObservationIgnored private var streamWindowVisible = false
+    @ObservationIgnored private var streamPresentationVisible = false
     @ObservationIgnored private var remoteInputFocusState = false
     @ObservationIgnored private var nextInputSequenceValue: UInt64 = 1
 
     #if DEBUG
     /// Creates a lightweight SessionManager for Xcode previews.
     /// No network transport is configured — `sessionClient` stays nil.
-    init(preview state: SessionState) {
+    init(
+        preview state: SessionState,
+        presentationMode: StreamPresentationMode = .window
+    ) {
         let renderer = VideoRenderer()
         self.authMode = .apple
         self.videoRenderer = renderer
         self.videoPipeline = VideoStreamPipeline(renderer: renderer)
         self.state = state
-        self.streamWindowRequested = state.isConnected
-        renderer.updateFormat(width: 1920, height: 1080)
+        self.activePresentationMode = presentationMode
+        renderer.installPreviewTestPattern(width: 1920, height: 1080)
+        updatePresentationRequests()
     }
     #endif
 
@@ -105,12 +154,17 @@ public final class SessionManager {
                     self.state = newState
                     switch newState {
                     case .connected:
-                        self.streamWindowRequested = true
+                        self.updatePresentationRequests()
                         self.videoPipeline.prepareForStream()
                     case .disconnected, .error:
-                        self.streamWindowRequested = false
+                        self.streamPresentationVisible = false
+                        self.remoteInputSuppressed = false
+                        self.updatePresentationRequests()
                         self.videoPipeline.reset(statusMessage: "Waiting for stream")
                     case .connecting, .authenticating, .resuming:
+                        self.streamPresentationVisible = false
+                        self.remoteInputSuppressed = false
+                        self.updatePresentationRequests()
                         self.videoPipeline.reset(statusMessage: "Waiting for stream")
                     }
                     self.synchronizeRemoteInputFocus()
@@ -129,7 +183,20 @@ public final class SessionManager {
         )
     }
 
-    public func connect(host: String, port: UInt16) {
+    public func connect(
+        host: String,
+        port: UInt16,
+        presentationMode: StreamPresentationMode
+    ) {
+        guard let sessionClient else {
+            logger.debug("Ignoring connect request because no transport is configured")
+            return
+        }
+
+        activePresentationMode = presentationMode
+        remoteInputSuppressed = false
+        updatePresentationRequests()
+
         connectTask?.cancel()
         connectTask = Task {
             let endpoint = SessionEndpoint(host: host, port: port)
@@ -170,25 +237,45 @@ public final class SessionManager {
     public func cancelConnection() async {
         connectTask?.cancel()
         connectTask = nil
+
+        guard let sessionClient else {
+            return
+        }
+
         await sessionClient.disconnect(reason: "user-cancelled")
         state = .disconnected
     }
 
     public func disconnect() async {
+        guard let sessionClient else {
+            return
+        }
+
         await sessionClient.disconnect(reason: "user-disconnect")
         logger.info("Disconnected")
     }
 
+    public func switchPresentation(to presentationMode: StreamPresentationMode) {
+        guard activePresentationMode != presentationMode else {
+            return
+        }
+
+        activePresentationMode = presentationMode
+        remoteInputSuppressed = false
+        updatePresentationRequests()
+        synchronizeRemoteInputFocus()
+    }
+
     public func simulateNetworkDrop() async {
-        guard state.isConnected else {
+        guard state.isConnected, let sessionClient else {
             return
         }
         logger.warning("Simulating unexpected transport loss")
         await sessionClient.simulateNetworkDrop()
     }
 
-    public func noteStreamWindowVisibility(_ isVisible: Bool) {
-        streamWindowVisible = isVisible
+    public func noteStreamPresentationVisibility(_ isVisible: Bool) {
+        streamPresentationVisible = isVisible
         synchronizeRemoteInputFocus()
     }
 
@@ -204,7 +291,7 @@ public final class SessionManager {
         x: Int32,
         y: Int32
     ) {
-        guard canSendRemoteInput else {
+        guard canSendRemoteInput, let sessionClient else {
             return
         }
         let sequence = nextInputSequence()
@@ -223,7 +310,7 @@ public final class SessionManager {
         x: Int32,
         y: Int32
     ) {
-        guard canSendRemoteInput else {
+        guard canSendRemoteInput, let sessionClient else {
             return
         }
         let sequence = nextInputSequence()
@@ -248,7 +335,7 @@ public final class SessionManager {
         x: Int32,
         y: Int32
     ) {
-        guard canSendRemoteInput else {
+        guard canSendRemoteInput, let sessionClient else {
             return
         }
         let sequence = nextInputSequence()
@@ -272,7 +359,7 @@ public final class SessionManager {
         phase: String,
         modifiers: UInt32
     ) {
-        guard canSendRemoteInput else {
+        guard canSendRemoteInput, let sessionClient else {
             return
         }
         Task {
@@ -294,6 +381,8 @@ public final class SessionManager {
             return AppleAuthProvider()
         case .test:
             return TestAuthProvider()
+        case .none:
+            fatalError("Auth provider is unavailable when auth mode is set to none")
         }
     }
 
@@ -306,7 +395,10 @@ public final class SessionManager {
     }
 
     private var canSendRemoteInput: Bool {
-        state.isConnected && streamWindowVisible && !remoteInputSuppressed
+        state.isConnected
+            && activePresentationMode == .window
+            && streamPresentationVisible
+            && !remoteInputSuppressed
     }
 
     private func synchronizeRemoteInputFocus() {
@@ -316,7 +408,7 @@ public final class SessionManager {
         }
 
         remoteInputFocusState = desiredFocus
-        guard state.isConnected else {
+        guard state.isConnected, let sessionClient else {
             return
         }
 
@@ -333,5 +425,11 @@ public final class SessionManager {
         let sequence = nextInputSequenceValue
         nextInputSequenceValue &+= 1
         return sequence
+    }
+
+    private func updatePresentationRequests() {
+        let presentationRequested = state.isConnected
+        streamWindowRequested = presentationRequested && activePresentationMode == .window
+        streamVolumeRequested = presentationRequested && activePresentationMode == .volume
     }
 }

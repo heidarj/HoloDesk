@@ -6,7 +6,7 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
 
-    @State private var hostAddress = "127.0.0.1"
+    @State private var hostAddress = "192.168.2.100"
     @State private var port = "4433"
 
     var body: some View {
@@ -19,7 +19,7 @@ struct ContentView: View {
 
             statusView
 
-            if session.streamWindowRequested {
+            if session.streamWindowRequested || session.streamVolumeRequested {
                 connectedUtilityView
             } else {
                 connectionForm
@@ -28,10 +28,13 @@ struct ContentView: View {
         .padding(40)
         .frame(minWidth: 520, minHeight: 420)
         .onAppear {
-            synchronizeStreamWindow(session.streamWindowRequested)
+            synchronizeStreamPresentations()
         }
         .onChange(of: session.streamWindowRequested) { _, requested in
-            synchronizeStreamWindow(requested)
+            synchronizeStreamPresentation(id: "stream-session", requested: requested)
+        }
+        .onChange(of: session.streamVolumeRequested) { _, requested in
+            synchronizeStreamPresentation(id: "stream-volume", requested: requested)
         }
     }
 
@@ -74,15 +77,32 @@ struct ContentView: View {
                     .frame(maxWidth: 90)
             }
 
-            Button {
-                let portNum = UInt16(port) ?? 4433
-                session.connect(host: hostAddress, port: portNum)
-            } label: {
-                Label(connectLabel, systemImage: connectSystemImage)
-                    .frame(maxWidth: 250)
+            HStack(spacing: 12) {
+                Button {
+                    connect(using: .window)
+                } label: {
+                    Label("Connect Window", systemImage: StreamPresentationMode.window.systemImage)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isConnecting)
+
+                Button {
+                    connect(using: .volume)
+                } label: {
+                    Label("Connect Volume", systemImage: StreamPresentationMode.volume.systemImage)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isConnecting)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(isConnecting)
+            .frame(maxWidth: 420)
+
+            Text(connectExplanation)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
 
             if isConnecting {
                 Button(role: .destructive) {
@@ -102,9 +122,12 @@ struct ContentView: View {
     private var connectedUtilityView: some View {
         VStack(spacing: 18) {
             VStack(alignment: .leading, spacing: 12) {
-                Label("Stream window active", systemImage: "rectangle.inset.filled.and.person.filled")
+                Label(
+                    "Stream \(session.activePresentationMode.label.lowercased()) active",
+                    systemImage: session.activePresentationMode.systemImage
+                )
                     .font(.headline)
-                Text("The desktop stream now runs in its own window. This utility window stays available for reconnect, link diagnostics, and disconnect.")
+                Text(session.activePresentationMode.utilityDescription)
                     .foregroundStyle(.secondary)
                 Text("Video: \(session.videoRenderer.frameSizeDescription)")
                     .font(.subheadline)
@@ -131,6 +154,18 @@ struct ContentView: View {
     @ViewBuilder
     private var connectedActions: some View {
         VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                presentationSwitcherButton(
+                    for: .window,
+                    title: "Show Window"
+                )
+                presentationSwitcherButton(
+                    for: .volume,
+                    title: "Show Volume"
+                )
+            }
+            .frame(maxWidth: 420)
+
             #if DEBUG
             Button {
                 Task {
@@ -155,16 +190,15 @@ struct ContentView: View {
         }
     }
 
-    private var connectLabel: String {
+    private var connectExplanation: String {
         switch session.authMode {
-        case .apple: return "Sign In and Connect"
-        case .test: return "Connect"
-        case .none: return "Connect (No Auth)"
+        case .apple:
+            return "Each presentation signs in first, then opens either the standard stream window or the new RealityKit volume."
+        case .test:
+            return "Test auth is enabled for local iteration. Choose whether the stream opens in the standard window or the new RealityKit volume."
+        case .none:
+            return "No host auth is being requested. Choose whether the stream opens in the standard window or the new RealityKit volume."
         }
-    }
-
-    private var connectSystemImage: String {
-        session.authMode == .apple ? "person.badge.key" : "link"
     }
 
     private var isConnecting: Bool {
@@ -185,11 +219,49 @@ struct ContentView: View {
         }
     }
 
-    private func synchronizeStreamWindow(_ requested: Bool) {
+    private func synchronizeStreamPresentations() {
+        synchronizeStreamPresentation(id: "stream-session", requested: session.streamWindowRequested)
+        synchronizeStreamPresentation(id: "stream-volume", requested: session.streamVolumeRequested)
+    }
+
+    private func synchronizeStreamPresentation(
+        id: String,
+        requested: Bool
+    ) {
         if requested {
-            openWindow(id: "stream-session")
+            openWindow(id: id)
         } else {
-            dismissWindow(id: "stream-session")
+            dismissWindow(id: id)
+        }
+    }
+
+    private func connect(using presentationMode: StreamPresentationMode) {
+        let portNum = UInt16(port) ?? 4433
+        session.connect(host: hostAddress, port: portNum, presentationMode: presentationMode)
+    }
+
+    @ViewBuilder
+    private func presentationSwitcherButton(
+        for presentationMode: StreamPresentationMode,
+        title: String
+    ) -> some View {
+        if session.activePresentationMode == presentationMode {
+            Button {
+                session.switchPresentation(to: presentationMode)
+            } label: {
+                Label(title, systemImage: presentationMode.systemImage)
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(true)
+            .buttonStyle(.borderedProminent)
+        } else {
+            Button {
+                session.switchPresentation(to: presentationMode)
+            } label: {
+                Label(title, systemImage: presentationMode.systemImage)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
         }
     }
 }

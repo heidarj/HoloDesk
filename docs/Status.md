@@ -26,6 +26,10 @@ Milestone 6 is now validated locally again on macOS, and the Milestone 7 code pa
 
 ## Latest Changes
 
+- Added a second client presentation mode for streaming: the utility shell can now connect directly into either the existing dedicated stream window or a new volumetric `RealityView` scene, and the shell can switch between those two presentations without reconnecting the QUIC session.
+- Added a new RealityKit-based volume renderer under `client-avp/HoloBridge/HoloBridge/Volume/` that generates a cylindrical-segment display mesh in code with `MeshDescriptor`/`MeshResource.generate(from:)`, so screen curvature is driven by runtime geometry parameters rather than entity scaling.
+- Added a lower-level dynamic-texture video path for the volume renderer: decoded frames from the existing VideoToolbox pipeline are copied into a `TextureResource.DrawableQueue`-backed `UnlitMaterial`, which keeps the volume display path separate from the Swift window chrome and avoids forcing the stream through an `AVPlayer` pipeline.
+- Refactored the stream ornament chrome into a shared SwiftUI view so the window and volume presentations reuse the same session status, switcher, debug, and disconnect controls, while the volume presentation adds runtime curvature/radius controls with minimal duplication.
 - Added `host/input/` as a new workspace crate with a safe session-scoped input API over Win32 `SendInput`, coordinate clamping, per-session pressed-button / pressed-key tracking, and cleanup on focus loss / disconnect.
 - Extended the host and shared Swift protocol layers with `input-pointer-datagram-v1`, media datagram kind `2` for pointer motion, and reliable `pointer_button`, `pointer_wheel`, `keyboard_key`, and `input_focus` control messages.
 - Updated the Rust transport server so post-auth control handling now accepts the new input messages, starts an input datagram task when the client advertises support, and feeds both channels into the new host input session.
@@ -167,6 +171,8 @@ Milestone 6 is now validated locally again on macOS, and the Milestone 7 code pa
 
 ## Known Limitations
 
+- The new volumetric presentation is currently display-first: it renders the live stream on a runtime-curved RealityKit mesh and exposes curvature controls through the ornament, but it does not yet remap remote pointer / keyboard interaction onto the curved surface.
+- The volume renderer currently uses a `TextureResource.DrawableQueue` + `UnlitMaterial` path fed from decoded `CVPixelBuffer`s. This is the lowest-risk bridge for the current pipeline, but it has not yet been compared on-device against a future `VideoMaterial(videoRenderer:)` backend.
 - Masked-color Windows cursor shapes are currently approximated as RGBA images on the host. Typical color and monochrome cursors are handled, but XOR-style masked-color cursors may not render perfectly yet.
 - The host watchdog now fails loudly when the worker stalls, but the underlying Media Foundation / D3D11 calls are still in-process. If Windows wedges inside a driver path that ignores flush/close, a full process restart may still be required.
 - The capture crate intentionally exposes GPU textures only on Windows. Non-Windows builds compile for workspace health, but all capture entrypoints return `UnsupportedPlatform`.
@@ -184,7 +190,7 @@ Milestone 6 is now validated locally again on macOS, and the Milestone 7 code pa
 
 ## Next Recommended Step
 
-Run the Milestone 7 manual acceptance pass on a real Apple Vision Pro against a Windows host: verify separate-window presentation, ornament-safe interaction, first-activation suppression, drag / wheel / hardware-key replay, and sequence-number-based latency measurements. If that pass is clean, close Milestone 7 and move to Milestone 8 audio; if device testing exposes UX gaps, carve the follow-up work into Milestone 7.1 for alternate pointer policies, text entry, and gesture tuning.
+Run a real Apple Vision Pro acceptance pass that covers both stream presentations: verify the existing dedicated window flow still behaves correctly, verify the new volumetric curved screen opens cleanly from the utility shell, confirm the ornament-based curvature controls feel usable on device, and then decide whether the next slice should be curved-surface input remapping or an immersive-space variant that reuses the same RealityKit display entity.
 
 ---
 

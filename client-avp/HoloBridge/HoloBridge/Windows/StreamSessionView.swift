@@ -1,3 +1,4 @@
+import HoloBridgeClientCore
 import SwiftUI
 
 struct StreamSessionView: View {
@@ -31,16 +32,16 @@ struct StreamSessionView: View {
             attachmentAnchor: .scene(.bottom),
             contentAlignment: .center
         ) {
-            ornamentControls
+            StreamSessionOrnament(presentationMode: .window)
                 .onHover { hovering in
                     session.setOrnamentInteraction(active: hovering)
                 }
         }
         .onAppear {
-            session.noteStreamWindowVisibility(true)
+            session.noteStreamPresentationVisibility(true)
         }
         .onDisappear {
-            session.noteStreamWindowVisibility(false)
+            session.noteStreamPresentationVisibility(false)
         }
     }
 
@@ -112,58 +113,6 @@ struct StreamSessionView: View {
         }
     }
 
-    @ViewBuilder
-    private var ornamentControls: some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(session.state.label)
-                    .font(.headline)
-                Text(session.videoRenderer.frameSizeDescription)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-                .frame(height: 28)
-
-            Text("Frames \(session.videoRenderer.framesPresented)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if let issue = session.videoRenderer.lastErrorMessage {
-                Divider()
-                    .frame(height: 28)
-                Text(issue)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            #if DEBUG
-            Button {
-                Task {
-                    await session.simulateNetworkDrop()
-                }
-            } label: {
-                Label("Drop Link", systemImage: "wifi.slash")
-            }
-            .buttonStyle(.bordered)
-            #endif
-
-            Button(role: .destructive) {
-                Task {
-                    await session.disconnect()
-                }
-            } label: {
-                Label("Disconnect", systemImage: "link.badge.xmark")
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .background(.regularMaterial, in: Capsule())
-    }
-
     private var resolvedVideoSize: CGSize {
         if session.videoRenderer.videoFrameWidth > 0, session.videoRenderer.videoFrameHeight > 0 {
             return CGSize(
@@ -206,6 +155,11 @@ struct StreamSessionView: View {
 #if DEBUG
 #Preview {
     StreamSessionView()
-        .environment(SessionManager(preview: .connected(userDisplayName: "Preview User")))
+        .environment(
+            SessionManager(
+                preview: .connected(userDisplayName: "Preview User"),
+                presentationMode: .window
+            )
+        )
 }
 #endif
